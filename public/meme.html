@@ -161,7 +161,7 @@
         
         <!-- Swap Button Link to Landing Page DEX -->
         <a
-          href="/"
+          href="/swap.html"
           class="px-3 py-1.5 min-h-[36px] bg-emerald-500/15 hover:bg-emerald-500/30 active:bg-emerald-500/50 focus-visible:ring-1 focus-visible:ring-naraGreen outline-none border border-emerald-500/40 hover:border-emerald-400 text-naraGreen hover:text-white text-[10px] font-bold tracking-[0.15em] uppercase transition-all duration-150 flex items-center gap-1.5 cursor-pointer shadow-[0_0_12px_rgba(57,255,20,0.25)] no-underline select-none"
           title="Open NARA v4 Swap"
         >
@@ -221,7 +221,7 @@
           <img 
             src="/nara_meme_hero.jpg" 
             alt="NARA - Token First. The Machine Follows." 
-            class="w-full h-auto max-h-[66vh] sm:max-h-[70vh] object-contain mx-auto block select-none pointer-events-none transition-transform duration-300 group-hover/art:scale-[1.006]"
+            class="w-full h-auto max-h-[46vh] sm:max-h-[60vh] md:max-h-[68vh] object-contain mx-auto block select-none pointer-events-none transition-transform duration-300 group-hover/art:scale-[1.006]"
             loading="eager"
           />
           <div class="absolute inset-0 vignette-radial pointer-events-none"></div>
@@ -717,11 +717,11 @@
   <!-- SEWER LOOT REVEAL MODAL (POPS ON DISCOVERY OR CARD INSPECT) -->
   <div 
     id="lootModal" 
-    class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md overflow-y-auto"
+    class="hidden fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/90 backdrop-blur-md"
     onclick="closeLootModal(event)"
   >
     <div 
-      class="relative w-full max-w-md bg-[#0D0F14] border border-white/20 specular-top shadow-[0_25px_80px_rgba(0,0,0,0.95)] p-4 sm:p-6 flex flex-col items-center text-center font-mono my-auto"
+      class="relative w-full max-w-[340px] sm:max-w-md max-h-[90dvh] sm:max-h-[88vh] bg-[#0D0F14] border border-white/20 specular-top shadow-[0_20px_70px_rgba(0,0,0,0.98)] p-3 sm:p-5 flex flex-col items-center text-center font-mono overflow-y-auto overscroll-contain"
       onclick="event.stopPropagation()"
     >
       <!-- Corner Reticles -->
@@ -733,7 +733,7 @@
       <!-- Close Button -->
       <button 
         onclick="closeLootModal()"
-        class="absolute top-3 right-3 w-8 h-8 flex items-center justify-center text-white/40 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 cursor-pointer text-xs transition-all focus-visible:ring-1 focus-visible:ring-white/50 outline-none"
+        class="absolute top-2.5 right-2.5 sm:top-3 sm:right-3 w-8 h-8 flex items-center justify-center text-white/40 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 cursor-pointer text-xs transition-all focus-visible:ring-1 focus-visible:ring-white/50 outline-none"
         title="Close (Esc)"
         aria-label="Close loot modal"
       >
@@ -741,14 +741,14 @@
       </button>
 
       <!-- Loot Status Pill -->
-      <div id="modalStatusBadge" class="px-2.5 py-1 bg-emerald-500/15 border border-emerald-500/40 text-naraGreen text-[10px] font-bold tracking-widest uppercase mb-3 flex items-center gap-1.5 shadow-[0_0_12px_rgba(57,255,20,0.3)] select-none">
+      <div id="modalStatusBadge" class="px-2.5 py-0.5 sm:py-1 bg-emerald-500/15 border border-emerald-500/40 text-naraGreen text-[9px] sm:text-[10px] font-bold tracking-widest uppercase mb-2 sm:mb-2.5 flex items-center gap-1.5 shadow-[0_0_12px_rgba(57,255,20,0.3)] select-none">
         <span>🚽</span> <span id="modalStatusText">NEW SEWER DROP DREDGED!</span>
       </div>
 
-      <!-- Offscreen or Live Rendered 600x600 Card Canvas (Retina Crisp) -->
-      <div class="relative w-64 sm:w-72 aspect-square mb-3 shadow-[0_15px_45px_rgba(0,0,0,0.8)] border border-white/15 bg-black overflow-hidden group select-none">
+      <!-- Scaled Mobile-First Retina Card Canvas -->
+      <div class="relative w-44 sm:w-56 md:w-64 max-h-[30vh] sm:max-h-[36vh] aspect-square mb-2 sm:mb-2.5 shadow-[0_12px_36px_rgba(0,0,0,0.8)] border border-white/15 bg-black overflow-hidden group select-none flex items-center justify-center">
         <canvas id="cardCanvas" width="600" height="600" class="w-full h-full object-contain block"></canvas>
-        <div id="cardCopyOverlay" class="hidden absolute inset-0 bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-3 text-naraGreen text-xs font-bold uppercase tracking-wider">
+        <div id="cardCopyOverlay" class="hidden absolute inset-0 bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-2 text-naraGreen text-xs font-bold uppercase tracking-wider">
           <span class="text-2xl mb-1">📋✓</span>
           <span>CARD COPIED TO CLIPBOARD!</span>
           <span class="text-[9px] text-white/70 normal-case mt-1 font-sans">Press Ctrl+V in your tweet to attach!</span>
@@ -756,24 +756,24 @@
       </div>
 
       <!-- Card Metadata Summary -->
-      <div class="w-full bg-black/60 border border-white/[0.08] p-2.5 mb-3 text-left select-none">
-        <div class="flex items-center justify-between text-[10px] mb-1">
+      <div class="w-full bg-black/60 border border-white/[0.08] p-2 sm:p-2.5 mb-2 sm:mb-2.5 text-left select-none">
+        <div class="flex items-center justify-between text-[10px] sm:text-[11px] mb-0.5">
           <span id="modalCardName" class="font-bold text-white tracking-wider truncate">CROWN ROYAL SOVEREIGN</span>
-          <span id="modalCardRarity" class="px-1.5 py-0.5 text-[9px] font-bold uppercase border border-amber-400 text-amber-400">EPIC</span>
+          <span id="modalCardRarity" class="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-bold uppercase border border-amber-400 text-amber-400">EPIC</span>
         </div>
-        <div class="flex items-center justify-between text-[9px] text-white/50">
+        <div class="flex items-center justify-between text-[8px] sm:text-[9px] text-white/50">
           <span id="modalCardSerial">SERIAL: #08-7749</span>
           <span id="modalCardPerk" class="text-emerald-400 font-bold">+40% Royal Flush</span>
         </div>
       </div>
 
       <!-- Action Deck -->
-      <div class="w-full flex flex-col gap-2">
+      <div class="w-full flex flex-col gap-1.5 sm:gap-2">
         <!-- 1-Click Clipboard Image Copy & Tweet Action -->
         <button 
           id="modalCopyAndTweetBtn"
           onclick="copyCardAndTweet()"
-          class="w-full min-h-[40px] py-2 bg-white text-black hover:bg-white/90 active:bg-white/80 font-bold text-[11px] tracking-wider uppercase transition-all flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.3)] font-mono focus-visible:ring-1 focus-visible:ring-white outline-none"
+          class="w-full min-h-[38px] sm:min-h-[42px] py-1.5 sm:py-2 bg-white text-black hover:bg-white/90 active:bg-white/80 font-bold text-[10px] sm:text-[11px] tracking-wider uppercase transition-all flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.3)] font-mono focus-visible:ring-1 focus-visible:ring-white outline-none"
           title="Copies card PNG to clipboard and opens X tweet intent"
         >
           <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 256 256">
@@ -782,11 +782,11 @@
           <span id="modalTweetBtnText">📋 COPY CARD & TWEET ON X</span>
         </button>
 
-        <div class="w-full grid grid-cols-2 gap-2">
+        <div class="w-full grid grid-cols-2 gap-1.5 sm:gap-2">
           <!-- Download Card PNG Button -->
           <button 
             onclick="downloadCardPNG()"
-            class="w-full min-h-[36px] py-1.5 bg-white/[0.05] hover:bg-white/[0.1] active:bg-white/[0.15] border border-white/15 text-white/80 hover:text-white font-bold text-[10px] tracking-wider uppercase transition-all flex items-center justify-center gap-1.5 cursor-pointer font-mono focus-visible:ring-1 focus-visible:ring-white/50 outline-none"
+            class="w-full min-h-[34px] sm:min-h-[36px] py-1 sm:py-1.5 bg-white/[0.05] hover:bg-white/[0.1] active:bg-white/[0.15] border border-white/15 text-white/80 hover:text-white font-bold text-[9px] sm:text-[10px] tracking-wider uppercase transition-all flex items-center justify-center gap-1.5 cursor-pointer font-mono focus-visible:ring-1 focus-visible:ring-white/50 outline-none"
             title="Download high-res 600x600 collectible card"
           >
             <span>💾</span> <span>DOWNLOAD</span>
@@ -795,7 +795,7 @@
           <!-- Dismiss -->
           <button 
             onclick="closeLootModal()"
-            class="w-full min-h-[36px] py-1.5 bg-white/[0.02] hover:bg-white/[0.06] border border-white/10 text-white/50 hover:text-white font-mono text-[10px] uppercase tracking-wider transition-all cursor-pointer focus-visible:ring-1 focus-visible:ring-white/50 outline-none"
+            class="w-full min-h-[34px] sm:min-h-[36px] py-1 sm:py-1.5 bg-white/[0.02] hover:bg-white/[0.06] border border-white/10 text-white/50 hover:text-white font-mono text-[9px] sm:text-[10px] uppercase tracking-wider transition-all cursor-pointer focus-visible:ring-1 focus-visible:ring-white/50 outline-none"
           >
             <span>KEEP FLUSHING</span>
           </button>
@@ -803,7 +803,7 @@
       </div>
 
       <!-- Explanatory Help Note -->
-      <div class="mt-2.5 text-[9px] font-sans text-white/40 leading-tight select-none">
+      <div class="mt-2 text-[8px] sm:text-[9px] font-sans text-white/40 leading-tight select-none">
         💡 <span class="text-white/60">How it works:</span> "Copy & Tweet" copies the card image to your clipboard and opens Twitter. Simply press <kbd class="px-1 py-0.5 bg-white/10 text-white font-mono text-[8px]">Ctrl+V</kbd> to paste the sticker image!
       </div>
 

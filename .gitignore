@@ -32,3 +32,13 @@ pnpm-debug.log*
 
 # TypeScript cache
 *.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Backups & source maps
+*.bak
+*.map
+*.log
+.evidence/
+.tmp/
+.cache/

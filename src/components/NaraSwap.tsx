@@ -31,6 +31,7 @@ import {
   NARA_V4_CONFIG,
   getUnifiedQuote,
   buildV4SwapCall,
+  buildEthToNaraSwapCall,
   type SupportedChain,
   type UnifiedQuoteResult,
 } from "../lib/dexRouter";
@@ -362,8 +363,48 @@ export default function NaraSwap() {
       const isUsdcOut = toToken.address.toLowerCase() === NARA_V4_CONFIG.base.toLowerCase();
       const isNaraOut = toToken.address.toLowerCase() === NARA_V4_CONFIG.token.toLowerCase();
       const isDirectHookTrade = isBase && ((isUsdcIn && isNaraOut) || (isNaraIn && isUsdcOut));
+      const isEthToNara = isBase && fromToken.symbol === "ETH" && isNaraOut;
 
-      if (isDirectHookTrade) {
+      if (isEthToNara) {
+        // =====================================================================
+        // PATH C: 1-CLICK ATOMIC NATIVE ETH -> NARA (WRAP -> V3 -> V4 -> SWEEP)
+        // =====================================================================
+        // ZERO APPROVALS NEEDED! Native ETH is sent directly in value.
+        const currentBlock = await provider.getBlock("latest");
+        const deadline = currentBlock.timestamp + (txDeadlineMinutes * 60);
+
+        // Calculate minimum output with user slippage tolerance
+        const minNaraNum = parseFloat(toAmountOutput.replace(/,/g, "")) * (1 - slippageTolerance / 10000);
+        const minNaraWei = ethers.utils.parseUnits(
+          Math.max(minNaraNum, 0).toFixed(toToken.decimals),
+          toToken.decimals
+        );
+
+        // Expected intermediate USDC (from quote or fallback estimation)
+        const estUsdcWei = quoteResult?.intermediateUsdcWei
+          ? ethers.BigNumber.from(quoteResult.intermediateUsdcWei)
+          : ethers.utils.parseUnits((parseFloat(cleanAmount) * 2500).toFixed(6), 6);
+        const minUsdcWei = estUsdcWei.mul(10000 - slippageTolerance).div(10000);
+
+        const callData = buildEthToNaraSwapCall(
+          amountInWei,
+          connectedAddress,
+          minUsdcWei,
+          minNaraWei
+        );
+
+        const routerAbi = [
+          "function execute(bytes commands, bytes[] inputs, uint256 deadline) payable",
+        ];
+        const routerContract = new ethers.Contract(NARA_V4_CONFIG.universalRouter, routerAbi, signer);
+        const tx = await routerContract.execute(callData.commands, callData.inputs, deadline, {
+          value: callData.value,
+          gasLimit: 850000,
+        });
+        await tx.wait(1);
+
+        setSwapSuccess(`Successfully swapped ${cleanAmount} ETH to NARA in 1 click!`);
+      } else if (isDirectHookTrade) {
         // =====================================================================
         // PATH A: DIRECT UNISWAP V4 HOOK EXECUTION (USDC <-> NARA)
         // =====================================================================
@@ -748,7 +789,13 @@ export default function NaraSwap() {
               </span>
             </div>
             <span className="text-[#5c6d84] text-[10px] sm:text-[10.5px] shrink-0 ml-2">
-              {quoteResult?.routeType === "v4_hook" ? "Direct On-Chain" : quoteResult?.routeType === "composite" ? "Auto-Routed" : "Best Execution"}
+              {quoteResult?.routeType === "v4_hook"
+                ? "Direct On-Chain"
+                : quoteResult?.routeType === "v4_atomic_eth"
+                ? "1-Click Atomic"
+                : quoteResult?.routeType === "composite"
+                ? "Auto-Routed"
+                : "Best Execution"}
             </span>
           </div>
 
@@ -815,10 +862,22 @@ export default function NaraSwap() {
                 disabled={isSwapping}
                 className="w-full sm:w-auto h-[42px] sm:h-[43px] px-6 sm:px-7 rounded-xl bg-[#00F0FF] hover:bg-[#33f3ff] text-[#022428] font-sans font-bold text-[13.5px] tracking-wide transition-all shadow-[0_0_24px_rgba(0,240,255,0.75)] hover:shadow-[0_0_32px_rgba(0,240,255,0.95)] flex items-center justify-center active:scale-95 disabled:opacity-50 cursor-pointer select-none"
               >
-                <span>{isSwapping ? "Swapping..." : toToken.symbol === "NARA" ? "Swap $NARA" : "Swap Tokens"}</span>
+                <span>
+                  {isSwapping
+                    ? "Swapping..."
+                    : toToken.symbol === "NARA"
+                    ? fromToken.symbol === "ETH"
+                      ? "Swap ETH → NARA (1-Click)"
+                      : "Swap $NARA"
+                    : "Swap Tokens"}
+                </span>
               </button>
               <span className="text-[#5c6d84] text-[9.5px] tracking-tight mt-1 select-none text-center">
-                {toToken.symbol === "NARA" ? "Direct Uniswap v4 Hook liquidity on Base" : "Execute instant multi-DEX swap"}
+                {fromToken.symbol === "ETH" && toToken.symbol === "NARA"
+                  ? "Atomic 1-click on-chain execution (Zero token approvals)"
+                  : toToken.symbol === "NARA"
+                  ? "Direct Uniswap v4 Hook liquidity on Base"
+                  : "Execute instant multi-DEX swap"}
               </span>
             </div>
           </div>

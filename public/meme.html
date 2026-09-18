@@ -171,15 +171,17 @@
           <span>SWAP <span class="text-[8px] sm:text-[9px] px-1 py-0.5 bg-amber-500/20 text-amber-200 border border-amber-500/40">SOON</span></span>
         </button>
 
-        <!-- Flush Button -->
+        <!-- Flush Button with 1.0s Hydraulic Cooldown Gauge -->
         <button
+          id="headerFlushBtn"
           onclick="triggerHydraulicFlush()"
-          class="px-3 py-1.5 min-h-[36px] bg-hazardRed/15 hover:bg-hazardRed/30 active:bg-hazardRed/50 focus-visible:ring-1 focus-visible:ring-hazardRed outline-none border border-hazardRed/40 hover:border-hazardRed text-red-200 hover:text-white text-[10px] font-bold tracking-[0.15em] uppercase transition-all duration-150 flex items-center gap-1.5 cursor-pointer shadow-[0_0_12px_rgba(255,42,42,0.25)] group select-none"
-          title="Emergency Flush (Space / F)"
+          class="relative overflow-hidden px-3 py-1.5 min-h-[36px] bg-hazardRed/15 hover:bg-hazardRed/30 active:bg-hazardRed/50 focus-visible:ring-1 focus-visible:ring-hazardRed outline-none border border-hazardRed/40 hover:border-hazardRed text-red-200 hover:text-white text-[10px] font-bold tracking-[0.15em] uppercase transition-all duration-150 flex items-center gap-1.5 cursor-pointer shadow-[0_0_12px_rgba(255,42,42,0.25)] group select-none"
+          title="Hydraulic Flush (Space / F) [1.0s Cooldown]"
           aria-label="Flush Toilet"
         >
-          <span class="text-xs group-hover:rotate-12 transition-transform">🚽</span>
-          <span>FLUSH <span class="hidden sm:inline">TOILET</span></span>
+          <div id="flushCooldownBar" class="absolute inset-y-0 left-0 bg-hazardRed/35 w-0 transition-none pointer-events-none"></div>
+          <span class="relative z-10 text-xs group-hover:rotate-12 transition-transform">🚽</span>
+          <span id="headerFlushBtnLabel" class="relative z-10">FLUSH <span class="hidden sm:inline">TOILET</span></span>
         </button>
 
         <!-- CA Copy Button -->
@@ -231,7 +233,7 @@
           <!-- Interactive Hover Hint -->
           <div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 group-hover/art:opacity-100 transition-opacity duration-300">
             <div class="px-3 py-1.5 bg-black/85 border border-emerald-500/50 backdrop-blur-md shadow-[0_0_20px_rgba(57,255,20,0.3)]">
-              <span class="text-[10px] font-mono tracking-widest text-naraGreen font-bold uppercase flex items-center gap-1.5">
+              <span id="artHoverText" class="text-[10px] font-mono tracking-widest text-naraGreen font-bold uppercase flex items-center gap-1.5">
                 <span class="text-xs">👇</span> CLICK TO FLUSH CANDLES
               </span>
             </div>
@@ -557,7 +559,7 @@
       <!-- SEWER STICKER VAULT // LOOT LOCKER -->
       <div id="stickerVaultSection" class="w-full mt-3 bg-[#0A0C10] border border-white/[0.08] specular-top shadow-[0_20px_50px_rgba(0,0,0,0.8)] overflow-hidden">
         
-        <!-- Vault Header Bar -->
+        <!-- Vault Header Bar: Run Tracking, Personal Best & Progress -->
         <div class="px-3 sm:px-4 py-2 bg-[#0C0E13] border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-2 text-[10px]">
           <div class="flex items-center gap-2">
             <span class="w-1.5 h-1.5 rounded-full bg-naraGreen shadow-[0_0_8px_#39FF14]"></span>
@@ -568,12 +570,31 @@
             <span class="text-white/50 font-mono hidden sm:inline">12 ONCHAIN POOP COLLECTIBLES</span>
           </div>
 
-          <!-- Stash Progress Pill -->
-          <div class="flex items-center gap-2 font-mono">
-            <span class="text-white/40 text-[9px]">DISCOVERED:</span>
+          <!-- Stash Progress & Run Stats -->
+          <div class="flex flex-wrap items-center gap-2 font-mono">
+            <div class="flex items-center gap-1 text-[9px]">
+              <span class="text-white/40">RUN:</span>
+              <span class="px-1.5 py-0.5 bg-white/[0.06] border border-white/10 text-white font-bold tracking-wider">
+                <span id="runFlushesCount">0</span> CLICKS
+              </span>
+            </div>
+            <div class="flex items-center gap-1 text-[9px]">
+              <span class="text-white/40">BEST:</span>
+              <span class="px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 font-bold tracking-wider">
+                <span id="bestRecordCount">--</span>
+              </span>
+            </div>
             <span class="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 text-naraGreen font-bold text-[9px] uppercase tracking-wider flex items-center gap-1">
               <span id="vaultUnlockedCount">0</span> / 12 (<span id="vaultProgressPercent">0</span>%)
             </span>
+            <button 
+              id="resetRunBtn"
+              onclick="confirmResetRun()" 
+              class="px-2 py-0.5 min-h-[26px] bg-hazardRed/15 hover:bg-hazardRed/30 active:bg-hazardRed/50 border border-hazardRed/30 hover:border-hazardRed text-red-300 hover:text-white text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer select-none"
+              title="Reset current 12-card attempt to start a fresh run from 0 clicks"
+            >
+              RESET RUN
+            </button>
           </div>
         </div>
 
@@ -595,6 +616,76 @@
           >
             SHARE STASH ON X
           </button>
+        </div>
+
+      </div>
+
+      <!-- ALL-TIME FAME BOARD // LEADERBOARD SECTION -->
+      <div id="fameBoardSection" class="w-full mt-3 bg-[#0A0C10] border border-white/[0.08] specular-top shadow-[0_20px_50px_rgba(0,0,0,0.8)] overflow-hidden">
+        
+        <!-- Fame Board Header -->
+        <div class="px-3 sm:px-4 py-2.5 bg-[#0C0E13] border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-2 text-[10px]">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_#FFD700] animate-pulse"></span>
+            <span class="font-bold font-mono text-amber-300 tracking-widest uppercase flex items-center gap-1.5">
+              <span>👑</span> ALL-TIME FAME BOARD // FEWEST CLICKS TO 12/12
+            </span>
+            <span class="text-white/30 hidden sm:inline font-mono">//</span>
+            <span class="text-white/50 font-mono hidden sm:inline">1.0s HYDRAULIC COOLDOWN ENFORCED</span>
+          </div>
+          <div class="flex items-center gap-2 font-mono text-[9px] text-white/50">
+            <span>SORT: FEWEST CLICKS</span>
+            <button onclick="refreshLeaderboardUI()" class="px-2 py-0.5 bg-white/[0.05] hover:bg-white/[0.1] text-white/70 hover:text-white border border-white/10 uppercase cursor-pointer transition-all">
+              🔄 REFRESH
+            </button>
+          </div>
+        </div>
+
+        <!-- Game Rules Panel -->
+        <div class="px-3 sm:px-4 py-2 bg-black/40 border-b border-white/[0.05] grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 text-[9px] font-mono text-white/60">
+          <div class="flex items-center gap-1.5">
+            <span class="text-hazardRed font-bold">1.0s</span>
+            <span>Hydraulic cooldown per flush. Zero auto-clickers.</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="text-naraGreen font-bold">12/12</span>
+            <span>Collect all 12 unique onchain poop collectibles.</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="text-amber-300 font-bold">FEWEST</span>
+            <span>clicks to 12/12 secures all-time glory.</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="text-purple-400 font-bold">RESET</span>
+            <span>Start new runs anytime to beat your record.</span>
+          </div>
+        </div>
+
+        <!-- Leaderboard Table -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-left font-mono text-[10px] divide-y divide-white/[0.05]">
+            <thead>
+              <tr class="bg-[#08090C] text-white/40 uppercase tracking-wider text-[9px]">
+                <th class="py-2 px-3 sm:px-4 w-14 text-center">RANK</th>
+                <th class="py-2 px-3 sm:px-4">OPERATOR</th>
+                <th class="py-2 px-3 sm:px-4 text-center">SCORE</th>
+                <th class="py-2 px-3 sm:px-4 hidden sm:table-cell">RATING TIER</th>
+                <th class="py-2 px-3 sm:px-4 text-right hidden md:table-cell">RECORD DATE</th>
+              </tr>
+            </thead>
+            <tbody id="fameBoardBody" class="divide-y divide-white/[0.04] text-white/80">
+              <!-- Populated dynamically via JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Footer Note -->
+        <div class="px-3 sm:px-4 py-1.5 bg-[#08090C] border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-[9px] font-mono text-white/40">
+          <span class="flex items-center gap-1.5">
+            <span class="text-amber-400">⚡</span>
+            <span>Complete your 12-card vault to immortalize your handle on the Fame Board.</span>
+          </span>
+          <span class="text-emerald-400/80">VERIFIED ON BASE</span>
         </div>
 
       </div>
@@ -917,6 +1008,125 @@
           RETURN TO SEWER TERMINAL
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- 12/12 VICTORY CONQUERED MODAL (POPS ON COMPLETING ALL 12 CARDS) -->
+  <div 
+    id="victoryModal" 
+    class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/90 backdrop-blur-md"
+    onclick="closeVictoryModal(event)"
+  >
+    <div 
+      class="relative w-full max-w-[340px] sm:max-w-md bg-[#0D0F14] border border-amber-400/60 specular-top shadow-[0_20px_80px_rgba(255,215,0,0.3)] p-4 sm:p-6 flex flex-col items-center text-center font-mono select-none"
+      onclick="event.stopPropagation()"
+    >
+      <!-- Corner Reticles -->
+      <div class="absolute top-2 left-2 w-2 h-2 border-t border-l border-amber-400 pointer-events-none"></div>
+      <div class="absolute top-2 right-2 w-2 h-2 border-t border-r border-amber-400 pointer-events-none"></div>
+      <div class="absolute bottom-2 left-2 w-2 h-2 border-b border-l border-amber-400 pointer-events-none"></div>
+      <div class="absolute bottom-2 right-2 w-2 h-2 border-b border-r border-amber-400 pointer-events-none"></div>
+
+      <!-- Close Button -->
+      <button 
+        onclick="closeVictoryModal()"
+        class="absolute top-2.5 right-2.5 sm:top-3 sm:right-3 w-8 h-8 flex items-center justify-center text-white/40 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 cursor-pointer text-xs transition-all focus-visible:ring-1 focus-visible:ring-white/50 outline-none"
+        title="Close (Esc)"
+        aria-label="Close victory modal"
+      >
+        ✕
+      </button>
+
+      <!-- Trophy Icon & Badge -->
+      <div class="w-14 h-14 flex items-center justify-center bg-amber-500/20 border border-amber-400 text-amber-300 text-3xl mb-2.5 shadow-[0_0_24px_rgba(255,215,0,0.4)]">
+        👑
+      </div>
+
+      <div class="px-3 py-1 bg-amber-500/20 border border-amber-400/60 text-amber-300 text-[10px] font-bold tracking-widest uppercase mb-2 shadow-[0_0_12px_rgba(255,215,0,0.2)]">
+        🏆 12/12 SEWER VAULT CONQUERED!
+      </div>
+
+      <h3 class="text-lg sm:text-xl font-bold text-white tracking-wide uppercase mb-1">
+        PORCELAIN TRIUMPH
+      </h3>
+
+      <p class="text-[11px] text-white/70 font-sans max-w-xs mb-3 leading-relaxed">
+        You dredged every single rare onchain poop collectible through pure hydraulic discipline.
+      </p>
+
+      <!-- Score Banner -->
+      <div class="w-full bg-black/70 border border-amber-400/40 p-3 mb-3 text-center">
+        <div class="text-[9px] text-white/50 uppercase tracking-widest mb-1 font-mono">
+          OFFICIAL RUN SCORE
+        </div>
+        <div class="text-2xl sm:text-3xl font-extrabold text-amber-300 font-mono tracking-tight flex items-center justify-center gap-1.5">
+          <span id="victoryScoreNumber">0</span>
+          <span class="text-xs text-white/60 font-bold uppercase">CLICKS</span>
+        </div>
+        <div class="mt-1.5 inline-block px-2.5 py-0.5 text-[9px] font-bold font-mono uppercase tracking-wider border border-amber-400 text-amber-300 bg-amber-500/10" id="victoryTierBadge">
+          GOD-TIER PORCELAIN DEITY
+        </div>
+      </div>
+
+      <!-- Handle Input & Fame Board Submission -->
+      <div class="w-full mb-3 text-left">
+        <label for="victoryHandleInput" class="block text-[9px] text-white/60 font-mono uppercase mb-1">
+          OPERATOR HANDLE FOR ALL-TIME FAME BOARD:
+        </label>
+        <div class="flex items-center gap-1.5">
+          <input 
+            id="victoryHandleInput" 
+            type="text" 
+            maxlength="20" 
+            placeholder="@anon_operator"
+            class="flex-1 px-2.5 py-1.5 bg-black/80 border border-white/20 text-white font-mono text-[11px] focus:border-amber-400 outline-none placeholder:text-white/30"
+          />
+          <button 
+            id="victorySubmitBtn"
+            onclick="submitVictoryToFameBoard()"
+            class="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 active:bg-amber-300 text-black font-bold text-[10px] font-mono uppercase tracking-wider transition-all cursor-pointer whitespace-nowrap shadow-[0_0_12px_rgba(245,158,11,0.3)]"
+          >
+            <span id="victorySubmitBtnText">SUBMIT SCORE</span>
+          </button>
+        </div>
+        <div id="victorySubmitNotice" class="hidden text-[8px] text-naraGreen font-mono mt-1">
+          ✓ RECORD IMMORTALIZED ON ALL-TIME FAME BOARD!
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="w-full flex flex-col gap-2">
+        <!-- Post Victory to X -->
+        <a 
+          id="victoryTweetBtn" 
+          href="https://x.com/intent/post" 
+          target="_blank" 
+          rel="noopener noreferrer" 
+          onclick="handleVictoryTweet(event)"
+          class="w-full min-h-[38px] py-2 bg-white text-black hover:bg-white/90 font-bold text-[10px] tracking-wider uppercase transition-all flex items-center justify-center gap-2 cursor-pointer font-mono no-underline shadow-[0_0_15px_rgba(255,255,255,0.25)]"
+        >
+          <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 256 256">
+            <path d="M214.75,211.71l-62.6-98.38,61.77-67.95a8,8,0,0,0-11.84-10.76L143.24,99.9,94.06,22.69A8,8,0,0,0,87.27,19H40a8,8,0,0,0-6.75,12.29l62.6,98.37L34.08,197.62a8,8,0,1,0,11.84,10.76l58.84-64.72,49.18,77.21A8,8,0,0,0,160.73,225H208a8,8,0,0,0,6.75-12.29ZM165.23,209,68.88,41h21.89l96.35,168Z"/>
+          </svg>
+          <span>POST VICTORY PROOF ON X</span>
+        </a>
+
+        <!-- Reset Vault & Start New Run -->
+        <button 
+          onclick="resetAndStartNewRun()"
+          class="w-full min-h-[36px] py-1.5 bg-hazardRed/15 hover:bg-hazardRed/30 border border-hazardRed/40 text-red-200 hover:text-white text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 font-mono"
+        >
+          <span>🔄</span> <span>RESET VAULT & CHASE LOWER SCORE</span>
+        </button>
+
+        <button 
+          onclick="closeVictoryModal()"
+          class="w-full min-h-[32px] py-1 bg-white/[0.04] hover:bg-white/[0.1] border border-white/10 text-white/50 hover:text-white text-[9px] uppercase tracking-wider transition-all cursor-pointer font-mono"
+        >
+          KEEP BROWSING VAULT
+        </button>
+      </div>
+
     </div>
   </div>
 
@@ -1249,6 +1459,32 @@
       } catch (e) {}
     }
 
+    // Glorious Gold Victory Fanfare (Plays on Conquering all 12/12 Cards)
+    function playVictoryFanfare() {
+      if (soundMode === 'mute') return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const t = ctx.currentTime;
+        const target = masterLimiter || ctx.destination;
+        const arpeggio = [523.25, 659.25, 783.99, 1046.50, 1318.51, 1567.98]; // C5, E5, G5, C6, E6, G6
+        arpeggio.forEach((freq, idx) => {
+          const start = t + idx * 0.075;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(freq, start);
+          gain.gain.setValueAtTime(0.0001, start);
+          gain.gain.linearRampToValueAtTime(0.14, start + 0.012);
+          gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.42);
+          osc.connect(gain);
+          gain.connect(target);
+          osc.start(start);
+          osc.stop(start + 0.45);
+        });
+      } catch (e) {}
+    }
+
     function playHydraulicFlushSound() {
       if (soundMode === 'mute') return;
       try {
@@ -1292,7 +1528,11 @@
         .replace(/'/g, "&#039;");
     }
 
-    // --- FLUSH PROGRESS PERSISTENCE ---
+    // --- FLUSH & RUN PROGRESS PERSISTENCE ---
+    let runFlushes = 0;
+    let bestRunRecord = null;
+    let runWon = false;
+
     function loadFlushProgress() {
       try {
         const saved = localStorage.getItem("nara_flush_progress");
@@ -1303,15 +1543,40 @@
             previousTierLevel = Math.max(1, Math.min(9, Math.floor(Number(parsed.previousTierLevel) || 1)));
           }
         }
+        const savedRun = localStorage.getItem("nara_current_run_flushes_v1");
+        if (savedRun !== null) {
+          const num = parseInt(savedRun, 10);
+          if (Number.isFinite(num) && num >= 0) runFlushes = num;
+        }
+        const savedBest = localStorage.getItem("nara_best_run_record_v1");
+        if (savedBest !== null) {
+          const num = parseInt(savedBest, 10);
+          if (Number.isFinite(num) && num >= 12) bestRunRecord = num;
+        }
       } catch (e) {}
+      updateRunDisplayUI();
     }
+
     function saveFlushProgress() {
       try {
         localStorage.setItem("nara_flush_progress", JSON.stringify({
           flushCount: Math.max(0, Math.floor(flushCount)),
           previousTierLevel: Math.max(1, Math.min(9, Math.floor(previousTierLevel)))
         }));
+        localStorage.setItem("nara_current_run_flushes_v1", String(runFlushes));
+        if (bestRunRecord !== null) {
+          localStorage.setItem("nara_best_run_record_v1", String(bestRunRecord));
+        }
       } catch (e) {}
+    }
+
+    function updateRunDisplayUI() {
+      const runEl = document.getElementById("runFlushesCount");
+      if (runEl) runEl.innerText = runFlushes;
+      const bestEl = document.getElementById("bestRecordCount");
+      if (bestEl) {
+        bestEl.innerText = bestRunRecord !== null ? `${bestRunRecord} CLICKS` : "--";
+      }
     }
 
     function resizeCanvas() {
@@ -1967,7 +2232,7 @@
       c.fillText("naraprotocol.com/meme.html", W - 42, 545);
     }
 
-    function showLootModal(sticker, serial, isNew, flushNum) {
+    function showLootModal(sticker, serial, isNew, flushNum, isExplicitInspect = false) {
       const modal = document.getElementById("lootModal");
       const statusText = document.getElementById("modalStatusText");
       const nameEl = document.getElementById("modalCardName");
@@ -2265,30 +2530,65 @@
       if (activeTweetMode === 'sticker') {
         updateForgeUI();
       }
+
+      // Check for 12/12 Victory Conquered!
+      const totalUnlocked = Object.keys(userStash.unlocked).length;
+      if (totalUnlocked === 12 && !runWon) {
+        runWon = true;
+        setTimeout(() => {
+          triggerVictoryFlow();
+        }, 600);
+      }
     }
 
-    // Initial setup
-    loadUserStash();
-    loadFlushProgress();
-    updateVaultUI();
-    rollNewDegenMessage(flushCount);
-    updateForgeUI();
-    // Restore flush counter display from persisted state
-    const _counterEl = document.getElementById("flushCounter");
-    if (_counterEl && flushCount > 0) _counterEl.innerText = flushCount;
-    const _quickLabel = document.getElementById("quickTweetLabel");
-    if (_quickLabel && flushCount > 0) _quickLabel.innerText = `POST [${flushCount}]`;
-
-    // --- CLIENT-SIDE RATE LIMITING ---
+    // --- CLIENT-SIDE 1.0s HYDRAULIC COOLDOWN & ANTI-AUTO-CLICKER ---
     let lastFlushTimestamp = 0;
-    const FLUSH_RATE_LIMIT_MS = 80; // 80ms debounce/throttle prevents audio thrashing and DoS loops (~12.5/sec max)
+    let isFlushingCooldown = false;
+    const FLUSH_RATE_LIMIT_MS = 1000; // Strict 1.0-second hydraulic cooldown
 
     function triggerHydraulicFlush() {
       const now = Date.now();
-      if (now - lastFlushTimestamp < FLUSH_RATE_LIMIT_MS) {
+      if (isFlushingCooldown || (now - lastFlushTimestamp < FLUSH_RATE_LIMIT_MS)) {
+        // Visual shake feedback on header button if user tries to spam before 1.0s
+        const headerBtn = document.getElementById("headerFlushBtn");
+        if (headerBtn) {
+          headerBtn.classList.remove("animate-pulse");
+          void headerBtn.offsetWidth;
+          headerBtn.classList.add("animate-pulse");
+        }
         return; // Throttled
       }
+      isFlushingCooldown = true;
       lastFlushTimestamp = now;
+
+      // Update Cooldown Gauge UI
+      const headerBtn = document.getElementById("headerFlushBtn");
+      const headerLabel = document.getElementById("headerFlushBtnLabel");
+      const cooldownBar = document.getElementById("flushCooldownBar");
+      const hoverText = document.getElementById("artHoverText");
+
+      if (headerBtn) headerBtn.classList.add("opacity-75", "cursor-wait");
+      if (headerLabel) headerLabel.innerHTML = '⏳ RECHARGING...';
+      if (hoverText) hoverText.innerHTML = '<span class="text-xs">⏳</span> RECHARGING PRESSURE (1.0s)...';
+
+      if (cooldownBar) {
+        cooldownBar.style.transition = "none";
+        cooldownBar.style.width = "0%";
+        void cooldownBar.offsetWidth; // Force layout reflow
+        cooldownBar.style.transition = "width 1000ms linear";
+        cooldownBar.style.width = "100%";
+      }
+
+      setTimeout(() => {
+        isFlushingCooldown = false;
+        if (headerBtn) headerBtn.classList.remove("opacity-75", "cursor-wait");
+        if (headerLabel) headerLabel.innerHTML = 'FLUSH <span class="hidden sm:inline">TOILET</span>';
+        if (hoverText) hoverText.innerHTML = '<span class="text-xs">👇</span> CLICK TO FLUSH CANDLES';
+        if (cooldownBar) {
+          cooldownBar.style.transition = "none";
+          cooldownBar.style.width = "0%";
+        }
+      }, FLUSH_RATE_LIMIT_MS);
 
       playHydraulicFlushSound();
 
@@ -2305,8 +2605,11 @@
       }, 400);
 
       flushCount++;
+      runFlushes++;
       const counterEl = document.getElementById("flushCounter");
       if (counterEl) counterEl.innerText = flushCount;
+      const runCounterEl = document.getElementById("runFlushesCount");
+      if (runCounterEl) runCounterEl.innerText = runFlushes;
 
       // Persist progress
       saveFlushProgress();
@@ -2416,6 +2719,300 @@
       document.getElementById("milestoneBanner")?.classList.add("hidden");
     }
 
+    // --- ALL-TIME FAME BOARD & VICTORY ENGINE ---
+    const DEFAULT_FAME_BOARD = [
+      { rank: 1, handle: "@Satoshi_Plunger", score: 31, tier: "GOD-TIER PORCELAIN DEITY", date: "Dec 2024" },
+      { rank: 2, handle: "@Vitalik_Roll", score: 38, tier: "ELITE SEWER TACTICIAN", date: "Jan 2025" },
+      { rank: 3, handle: "@Base_General", score: 44, tier: "ELITE SEWER TACTICIAN", date: "Feb 2025" },
+      { rank: 4, handle: "@Degen_Harvester", score: 51, tier: "CERTIFIED PURGER", date: "Feb 2025" },
+      { rank: 5, handle: "@Sewer_Sniper", score: 59, tier: "CERTIFIED PURGER", date: "Mar 2025" }
+    ];
+
+    function getRatingTier(score) {
+      if (score < 35) {
+        return { name: "GOD-TIER PORCELAIN DEITY", color: "#FFD700", border: "#FFD700", bg: "rgba(255, 215, 0, 0.15)" };
+      } else if (score < 50) {
+        return { name: "ELITE SEWER TACTICIAN", color: "#38BDF8", border: "#38BDF8", bg: "rgba(56, 189, 248, 0.15)" };
+      } else if (score < 70) {
+        return { name: "CERTIFIED PURGER", color: "#39FF14", border: "#39FF14", bg: "rgba(57, 255, 20, 0.15)" };
+      } else {
+        return { name: "PERSISTENT BEAR SLAYER", color: "#A855F7", border: "#A855F7", bg: "rgba(168, 85, 247, 0.15)" };
+      }
+    }
+
+    let localFameBoard = [];
+
+    function loadLocalFameBoard() {
+      try {
+        const saved = localStorage.getItem("nara_fame_board_v1");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            localFameBoard = parsed;
+            return;
+          }
+        }
+      } catch (e) {}
+      localFameBoard = [...DEFAULT_FAME_BOARD];
+    }
+
+    function saveLocalFameBoard() {
+      try {
+        localStorage.setItem("nara_fame_board_v1", JSON.stringify(localFameBoard));
+      } catch (e) {}
+    }
+
+    function renderFameBoard(entries) {
+      const tbody = document.getElementById("fameBoardBody");
+      if (!tbody) return;
+      const list = Array.isArray(entries) && entries.length > 0 ? entries : localFameBoard;
+
+      tbody.innerHTML = "";
+      list.forEach((entry, idx) => {
+        const rank = idx + 1;
+        const tier = getRatingTier(entry.score);
+        let rankBadge = `#${rank}`;
+        let rankClass = "text-white/40 font-mono";
+
+        if (rank === 1) {
+          rankBadge = "🥇 1ST";
+          rankClass = "text-amber-300 font-bold font-mono";
+        } else if (rank === 2) {
+          rankBadge = "🥈 2ND";
+          rankClass = "text-slate-300 font-bold font-mono";
+        } else if (rank === 3) {
+          rankBadge = "🥉 3RD";
+          rankClass = "text-amber-500 font-bold font-mono";
+        }
+
+        const tr = document.createElement("tr");
+        tr.className = rank === 1 ? "bg-amber-500/[0.04] hover:bg-amber-500/[0.08] transition-colors" : "hover:bg-white/[0.02] transition-colors";
+        tr.innerHTML = `
+          <td class="py-2.5 px-3 sm:px-4 text-center ${rankClass}">${rankBadge}</td>
+          <td class="py-2.5 px-3 sm:px-4 font-mono font-bold text-white tracking-wide">
+            ${escapeHTML(entry.handle)}
+          </td>
+          <td class="py-2.5 px-3 sm:px-4 text-center font-mono font-extrabold text-amber-300">
+            ${entry.score} <span class="text-[8px] text-white/40 font-normal">CLICKS</span>
+          </td>
+          <td class="py-2.5 px-3 sm:px-4 hidden sm:table-cell">
+            <span class="px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider border" style="color:${tier.color}; border-color:${tier.border}; background:${tier.bg};">
+              ${tier.name}
+            </span>
+          </td>
+          <td class="py-2.5 px-3 sm:px-4 text-right hidden md:table-cell text-white/40 font-mono text-[9px]">
+            ${escapeHTML(entry.date || "RECENT")}
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function syncFameBoardFromAPI() {
+      try {
+        const res = await fetch("/api/leaderboard", { method: "GET" });
+        if (res.ok) {
+          const remoteData = await res.json();
+          if (Array.isArray(remoteData) && remoteData.length > 0) {
+            // Merge with any offline submissions in localFameBoard
+            const merged = [...remoteData];
+            localFameBoard.forEach(localItem => {
+              if (!merged.some(m => m.handle.toLowerCase() === localItem.handle.toLowerCase() && m.score === localItem.score)) {
+                merged.push(localItem);
+              }
+            });
+            merged.sort((a, b) => a.score - b.score);
+            localFameBoard = merged.slice(0, 50).map((item, idx) => ({ ...item, rank: idx + 1 }));
+            saveLocalFameBoard();
+            renderFameBoard(localFameBoard);
+            return;
+          }
+        }
+      } catch (err) {
+        // Functions API not available (e.g. running on Vite or static file)
+      }
+      renderFameBoard(localFameBoard);
+    }
+
+    function refreshLeaderboardUI() {
+      playMechanicalClick();
+      syncFameBoardFromAPI();
+      injectSewerEvent("[FAME BOARD] Leaderboard telemetry refreshed.");
+    }
+
+    function triggerVictoryFlow() {
+      playVictoryFanfare();
+
+      // Explosive Gold & Emerald Candlestick shower
+      const originX = window.innerWidth / 2;
+      const originY = window.innerHeight * 0.35;
+      for (let i = 0; i < 110; i++) {
+        const c = new Candlestick(
+          originX + (Math.random() - 0.5) * 350,
+          originY + (Math.random() - 0.5) * 160
+        );
+        c.isGreen = true;
+        c.color = Math.random() > 0.4 ? "#FFD700" : "#39FF14";
+        c.glow = Math.random() > 0.4 ? "rgba(255, 215, 0, 0.7)" : "rgba(57, 255, 20, 0.7)";
+        c.vx = (Math.random() - 0.5) * 30;
+        c.vy = (Math.random() * -18) - 5;
+        candles.push(c);
+      }
+
+      // Update personal best record
+      if (bestRunRecord === null || runFlushes < bestRunRecord) {
+        bestRunRecord = runFlushes;
+        saveFlushProgress();
+        updateRunDisplayUI();
+      }
+
+      const rating = getRatingTier(runFlushes);
+      const scoreEl = document.getElementById("victoryScoreNumber");
+      const tierEl = document.getElementById("victoryTierBadge");
+      const handleInput = document.getElementById("victoryHandleInput");
+      const notice = document.getElementById("victorySubmitNotice");
+
+      if (scoreEl) scoreEl.innerText = runFlushes;
+      if (tierEl) {
+        tierEl.innerText = rating.name;
+        tierEl.style.color = rating.color;
+        tierEl.style.borderColor = rating.border;
+        tierEl.style.background = rating.bg;
+      }
+      if (notice) notice.classList.add("hidden");
+
+      // Remember last used handle if available
+      try {
+        const savedHandle = localStorage.getItem("nara_operator_handle_v1");
+        if (savedHandle && handleInput && !handleInput.value) {
+          handleInput.value = savedHandle;
+        }
+      } catch (e) {}
+
+      const modal = document.getElementById("victoryModal");
+      if (modal) modal.classList.remove("hidden");
+
+      injectSewerEvent(`👑 [VICTORY] 12/12 VAULT CONQUERED IN ${runFlushes} CLICKS! Rating: ${rating.name}`);
+    }
+
+    function closeVictoryModal(e) {
+      if (e) e.stopPropagation();
+      playMechanicalClick();
+      const modal = document.getElementById("victoryModal");
+      if (modal) modal.classList.add("hidden");
+    }
+
+    async function submitVictoryToFameBoard() {
+      playMechanicalClick();
+      const handleInput = document.getElementById("victoryHandleInput");
+      const btnText = document.getElementById("victorySubmitBtnText");
+      const notice = document.getElementById("victorySubmitNotice");
+
+      const rawHandle = handleInput ? handleInput.value.trim() : "";
+      const cleanHandle = (rawHandle.startsWith("@") ? rawHandle : `@${rawHandle}`)
+        .replace(/[^a-zA-Z0-9_@.-]/g, "")
+        .slice(0, 20);
+
+      if (!cleanHandle || cleanHandle.length < 2) {
+        alert("Please enter a valid operator handle (e.g. @YourName)");
+        return;
+      }
+
+      // Save handle preference
+      try {
+        localStorage.setItem("nara_operator_handle_v1", cleanHandle);
+      } catch (e) {}
+
+      const rating = getRatingTier(runFlushes);
+      const newEntry = {
+        handle: cleanHandle,
+        score: runFlushes,
+        tier: rating.name,
+        date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+        timestamp: Date.now()
+      };
+
+      // Add to local list
+      const existingIdx = localFameBoard.findIndex(e => e.handle.toLowerCase() === cleanHandle.toLowerCase());
+      if (existingIdx !== -1) {
+        if (runFlushes < localFameBoard[existingIdx].score) {
+          localFameBoard[existingIdx] = newEntry;
+        }
+      } else {
+        localFameBoard.push(newEntry);
+      }
+
+      localFameBoard.sort((a, b) => a.score - b.score);
+      localFameBoard = localFameBoard.slice(0, 50).map((item, idx) => ({ ...item, rank: idx + 1 }));
+      saveLocalFameBoard();
+      renderFameBoard(localFameBoard);
+
+      // Attempt remote sync via API
+      try {
+        if (btnText) btnText.innerText = "SUBMITTING...";
+        const res = await fetch("/api/leaderboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            handle: cleanHandle,
+            score: runFlushes,
+            cards: 12,
+            tier: rating.name
+          })
+        });
+        if (res.ok) {
+          const remoteData = await res.json();
+          if (Array.isArray(remoteData)) {
+            localFameBoard = remoteData;
+            saveLocalFameBoard();
+            renderFameBoard(localFameBoard);
+          }
+        }
+      } catch (err) {
+        // Fallback to local storage succeeded
+      }
+
+      if (btnText) btnText.innerText = "✓ SUBMITTED";
+      if (notice) notice.classList.remove("hidden");
+      injectSewerEvent(`👑 [FAME BOARD] ${cleanHandle} entered the All-Time Fame Board with ${runFlushes} clicks!`);
+    }
+
+    function handleVictoryTweet(e) {
+      if (e) e.preventDefault();
+      playMechanicalClick();
+      const rating = getRatingTier(runFlushes);
+      const text = `👑 [12/12 SEWER VAULT CONQUERED] 🐸🚽💩\n\nI just dredged all 12 rare onchain poop collectibles in ${runFlushes} clicks on @NARA_protocol!\n\nRank: ${rating.name}\nHydraulic Cooldown: 1.0s enforced\n\nCan you beat my record on the All-Time Fame Board? 👇\n\n⛓️ CA: 0x91FB...Ae0f`;
+      const shareUrl = getShareUrl();
+      const xUrl = `https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl)}`;
+      openSafeWindow(xUrl);
+    }
+
+    function resetAndStartNewRun() {
+      playMechanicalClick();
+      // Reset unlocked cards and run flushes for new attempt
+      userStash.unlocked = {};
+      userStash.activeStickerId = 1;
+      saveUserStash();
+
+      runFlushes = 0;
+      runWon = false;
+      saveFlushProgress();
+      updateRunDisplayUI();
+      updateVaultUI();
+
+      closeVictoryModal();
+      injectSewerEvent("🔄 [SYSTEM] Fresh run initialized! All 12 cards locked. Race for fewer clicks!");
+    }
+
+    function confirmResetRun() {
+      playMechanicalClick();
+      const unlockedCount = Object.keys(userStash.unlocked).length;
+      const msg = `Are you sure you want to reset your current run (${unlockedCount}/12 cards unlocked in ${runFlushes} clicks) to start fresh from 0?\n\n(Your lifetime flushes and personal best are preserved!)`;
+      if (confirm(msg)) {
+        resetAndStartNewRun();
+      }
+    }
+
     // --- BULLETPROOF IN-APP BROWSER CLIPBOARD COPY ---
     function copyTextFallback(text) {
       const ta = document.createElement("textarea");
@@ -2523,6 +3120,22 @@
       }
     }
 
+    // --- SYSTEM INITIALIZATION ---
+    loadUserStash();
+    loadFlushProgress();
+    loadLocalFameBoard();
+    renderFameBoard(localFameBoard);
+    syncFameBoardFromAPI();
+    updateVaultUI();
+    rollNewDegenMessage(flushCount);
+    updateForgeUI();
+
+    // Restore flush counter display from persisted state
+    const _counterEl = document.getElementById("flushCounter");
+    if (_counterEl && flushCount > 0) _counterEl.innerText = flushCount;
+    const _quickLabel = document.getElementById("quickTweetLabel");
+    if (_quickLabel && flushCount > 0) _quickLabel.innerText = `POST [${flushCount}]`;
+
     // --- KEYBOARD SHORTCUTS ---
     document.addEventListener("keydown", (e) => {
       // Don't trigger when typing in an input
@@ -2539,6 +3152,10 @@
         const swapModal = document.getElementById("swapPrelaunchModal");
         if (swapModal && !swapModal.classList.contains("hidden")) {
           closeSwapModal();
+        }
+        const vicModal = document.getElementById("victoryModal");
+        if (vicModal && !vicModal.classList.contains("hidden")) {
+          closeVictoryModal();
         }
         dismissMilestone();
       }

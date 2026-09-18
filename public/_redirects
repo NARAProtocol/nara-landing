@@ -1,3 +1,5 @@
-/meme    /meme.html    302
+/swap    /swap.html    200
+/swap/*  /swap.html    200
+/meme    /             301
 /*       /index.html   200
 

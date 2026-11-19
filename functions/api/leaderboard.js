@@ -28,6 +28,7 @@ const CLAIM_CODE_RE = /^NARA-[A-F0-9]{4}-[A-F0-9]{4}$/i;
 const JSON_HEADERS = {
   "Content-Type": "application/json; charset=utf-8",
   "Cache-Control": "no-store",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "no-referrer",
@@ -265,8 +266,7 @@ function normalizeIpKey(ip) {
 }
 
 async function hashedIpBucketKey(prefix, ip, env) {
-  const normalized = normalizeIpKey(ip);
-  if (!normalized) return "";
+  const normalized = normalizeIpKey(ip) || "__missing_ip__";
   const salt =
     (typeof env?.AWARD_CLAIM_SALT === "string" && env.AWARD_CLAIM_SALT.trim()) ||
     (typeof env?.TURNSTILE_SECRET_KEY === "string" && env.TURNSTILE_SECRET_KEY.trim()) ||
@@ -391,10 +391,11 @@ export async function onRequestGet(context) {
       }, 200);
     }
 
-    // 3. Standard Public Leaderboard (edge-cached per PoP when caches.default is available)
+    // 3. Standard Public Leaderboard (edge-cached per PoP using canonical pathname key)
     if (kv) {
       const edgeCache = typeof caches !== "undefined" && caches?.default ? caches.default : null;
-      const cacheKey = edgeCache ? new Request(url.toString(), { method: "GET" }) : null;
+      const canonicalBoardUrl = new URL("/api/leaderboard", url.origin).toString();
+      const cacheKey = edgeCache ? new Request(canonicalBoardUrl, { method: "GET" }) : null;
       if (edgeCache && cacheKey) {
         const hit = await edgeCache.match(cacheKey).catch(() => null);
         if (hit) return hit;
@@ -604,6 +605,12 @@ export async function onRequestPost(context) {
           message: "Handle is bound to another browser Award Pass. Choose a unique handle.",
         }, 403);
       }
+    } else if (idx !== -1 && !list[idx].keyHash && (keyHash || wallet)) {
+      // Prevent attaching a new operatorKey/wallet onto an existing legacy keyless handle
+      return json({
+        error: "handle_locked",
+        message: "Handle already exists without an Award Pass key. Choose a unique handle.",
+      }, 403);
     }
 
     await consumeRateBudget(kv, ip, rate.count, env);

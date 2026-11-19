@@ -10,6 +10,7 @@ import { BASE_BUILDER_CODE, BASE_CHAIN_ID_HEX, CANONICAL_URL, isTelegramWebView,
 import { appendErc8021DataSuffix, trySendCallsWithErc8021 } from "./erc8021.js";
 import {
   V4_SWAP_CONSTANTS,
+  quoteLiveV4Swap,
   strip0x,
   isValidAddress,
   abiWordU256,
@@ -563,14 +564,106 @@ export function computeLiveMonthlyNaraWei(
 }
 
 /**
+ * Computes complete transparent USD & NARA valuation for a Vault Receipt including
+ * both sealed principal and 100% buyer-transferred live chest balances (NARA + ETH + USDC).
+ */
+export function computeReceiptValueBreakdown({
+  principalWei = 0n,
+  priceWei = 0n,
+  claimableNaraWei = 0n,
+  pendingNaraWei = 0n,
+  claimableEthWei = 0n,
+  claimableUsdcUnits = 0n,
+  spotUsdPerNara = null,
+  ethUsd = null,
+  dexQuote = null,
+}) {
+  const principalNara = Number(formatUnits(BigInt(principalWei ?? 0n), 18));
+  const askEth = Number(formatUnits(BigInt(priceWei ?? 0n), 18));
+  const settledNaraWei = BigInt(claimableNaraWei ?? 0n);
+  const unsettledNaraWei = BigInt(pendingNaraWei ?? 0n);
+  const chestNaraTotalWei = settledNaraWei + unsettledNaraWei;
+  const chestNaraNum = Number(formatUnits(chestNaraTotalWei, 18));
+  const chestEthNum = Number(formatUnits(BigInt(claimableEthWei ?? 0n), 18));
+  const chestUsdcNum = Number(formatUnits(BigInt(claimableUsdcUnits ?? 0n), 6));
+
+  const validSpot = Number.isFinite(spotUsdPerNara) && spotUsdPerNara > 0 ? spotUsdPerNara : null;
+  const validEth = Number.isFinite(ethUsd) && ethUsd > 0 ? ethUsd : null;
+
+  const principalSpotUsd = validSpot && principalNara > 0 ? principalNara * validSpot : null;
+  const askUsd = validEth && askEth > 0 ? askEth * validEth : null;
+
+  let chestUsd = null;
+  const canPriceNara = chestNaraTotalWei === 0n || validSpot != null;
+  const canPriceEth = BigInt(claimableEthWei ?? 0n) === 0n || validEth != null;
+  if (canPriceNara && canPriceEth) {
+    chestUsd =
+      (validSpot ? chestNaraNum * validSpot : 0) +
+      (validEth ? chestEthNum * validEth : 0) +
+      chestUsdcNum;
+  }
+
+  const totalNaraIncluded = principalNara + chestNaraNum;
+  const totalIncludedUsd =
+    principalSpotUsd != null ? principalSpotUsd + (chestUsd != null ? chestUsd : 0) : null;
+  const netSavingsUsd =
+    totalIncludedUsd != null && askUsd != null ? totalIncludedUsd - askUsd : null;
+  const spotDiscountPct =
+    principalSpotUsd != null && askUsd != null && principalSpotUsd > askUsd
+      ? Math.round((1 - askUsd / principalSpotUsd) * 100)
+      : null;
+  const totalDiscountPct =
+    totalIncludedUsd != null && askUsd != null && totalIncludedUsd > askUsd
+      ? Math.round((1 - askUsd / totalIncludedUsd) * 100)
+      : null;
+
+  const dexOutNara =
+    dexQuote && dexQuote.status === "ok" && Number.isFinite(dexQuote.outNara) && dexQuote.outNara > 0
+      ? dexQuote.outNara
+      : null;
+  const dexExceedsDepth = Boolean(dexQuote && dexQuote.status === "exceeds_depth");
+  const dexMultiple =
+    dexOutNara && totalNaraIncluded > dexOutNara ? totalNaraIncluded / dexOutNara : null;
+  const dexSavingsPct =
+    dexOutNara && principalNara > dexOutNara
+      ? Math.round((1 - dexOutNara / principalNara) * 100)
+      : null;
+  const dexBeatsVault = Boolean(dexOutNara && dexOutNara > totalNaraIncluded * 1.01);
+
+  return {
+    principalNara,
+    askEth,
+    chestNaraTotalWei,
+    chestNaraNum,
+    chestEthNum,
+    chestUsdcNum,
+    principalSpotUsd,
+    chestUsd,
+    totalNaraIncluded,
+    totalIncludedUsd,
+    askUsd,
+    netSavingsUsd,
+    spotDiscountPct,
+    totalDiscountPct,
+    dexOutNara,
+    dexExceedsDepth,
+    dexMultiple,
+    dexSavingsPct,
+    dexBeatsVault,
+  };
+}
+
+/**
  * Pure verification & atomic BuyerBounds builder matching NARAPositionSaleV5._checkAcquisition.
- * Fails closed on any seller-identity, price, nonce, approval, backing, or expiry mismatch.
+ * Fails closed on any seller-identity, price, nonce, approval, backing, quorum, or expiry mismatch.
  */
 export function verifyAndBuildSeatBounds({
   tokenId,
   expectedPriceWei = null,
   freshOffer,
   quorumOffer = null,
+  quorumPos = null,
+  requireQuorum = false,
   ownerAddr = "",
   receiptTransferNonce = null,
   currentSafeSellerNonce = 0n,
@@ -596,14 +689,32 @@ export function verifyAndBuildSeatBounds({
   if (!ownerAddr || ownerAddr.toLowerCase() !== safeLower) {
     throw new Error(`Seat #${tokenId} is no longer held by canonical Treasury multisig.`);
   }
+  if (requireQuorum && !quorumOffer) {
+    throw new Error(
+      `Independent secondary Base RPC verification failed for Receipt #${tokenId}. Wait a moment and retry.`
+    );
+  }
   if (quorumOffer) {
     if (
       quorumOffer.listingId !== freshOffer.listingId ||
       quorumOffer.seller.toLowerCase() !== safeLower ||
-      quorumOffer.price !== freshOffer.price
+      quorumOffer.price !== freshOffer.price ||
+      quorumOffer.expiry !== freshOffer.expiry
     ) {
       throw new Error(
         `Cross-RPC verification mismatch on Seat #${tokenId} — refreshed live state before signing.`
+      );
+    }
+  }
+  if (quorumPos && pos) {
+    if (
+      quorumPos.principal !== pos.principal ||
+      quorumPos.generationOwner.toLowerCase() !== pos.generationOwner.toLowerCase() ||
+      quorumPos.termsHash.toLowerCase() !== pos.termsHash.toLowerCase() ||
+      quorumPos.withdrawn !== pos.withdrawn
+    ) {
+      throw new Error(
+        `Cross-RPC principal verification mismatch on Seat #${tokenId} — refreshed live state before signing.`
       );
     }
   }
@@ -712,9 +823,15 @@ export async function simulateSeatPurchaseFailClosed(provider, txCall, fallbackR
 
 // --- RPC Transport ---
 
-async function publicBaseRpcRequest(method, params) {
+let lastPrimaryPublicRpcIdx = -1;
+
+async function publicBaseRpcRequest(method, params, { skipIndex = -1, startIndex = 0 } = {}) {
   let lastErr = null;
-  for (const url of PUBLIC_BASE_RPCS) {
+  const n = PUBLIC_BASE_RPCS.length;
+  for (let offset = 0; offset < n; offset++) {
+    const idx = (startIndex + offset) % n;
+    if (idx === skipIndex) continue;
+    const url = PUBLIC_BASE_RPCS[idx];
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
     try {
@@ -732,6 +849,7 @@ async function publicBaseRpcRequest(method, params) {
         rpcErr.data = json.error.data;
         throw rpcErr;
       }
+      if (skipIndex === -1) lastPrimaryPublicRpcIdx = idx;
       return json?.result;
     } catch (err) {
       lastErr = err;
@@ -749,7 +867,10 @@ async function baseRpcRequest(method, params) {
       const chainHex = await walletProvider.request({ method: "eth_chainId" });
       if (parseInt(String(chainHex), 16) === ANCHOR_SEAT_CONSTANTS.chainId) {
         const res = await walletProvider.request({ method, params });
-        if (res != null) return res;
+        if (res != null) {
+          lastPrimaryPublicRpcIdx = -1; // Primary used wallet provider, distinct from all public RPCs
+          return res;
+        }
       }
     } catch {
       // Fall back to public Base RPC endpoints
@@ -758,13 +879,17 @@ async function baseRpcRequest(method, params) {
   return publicBaseRpcRequest(method, params);
 }
 
-async function multicallRead(calls, forcePublic = false) {
+async function multicallRead(calls, forcePublic = false, { skipPrimaryPublic = false } = {}) {
   const data = encodeMulticall3Aggregate3(calls);
-  const rpcFn = forcePublic ? publicBaseRpcRequest : baseRpcRequest;
-  const hex = await rpcFn("eth_call", [
-    { to: ANCHOR_SEAT_CONSTANTS.multicall3, data },
-    "latest",
-  ]);
+  const hex = forcePublic
+    ? await publicBaseRpcRequest(
+        "eth_call",
+        [{ to: ANCHOR_SEAT_CONSTANTS.multicall3, data }, "latest"],
+        skipPrimaryPublic
+          ? { skipIndex: lastPrimaryPublicRpcIdx, startIndex: (Math.max(0, lastPrimaryPublicRpcIdx) + 1) % PUBLIC_BASE_RPCS.length }
+          : {}
+      )
+    : await baseRpcRequest("eth_call", [{ to: ANCHOR_SEAT_CONSTANTS.multicall3, data }, "latest"]);
   if (typeof hex !== "string" || !hex.startsWith("0x") || hex.length < 130) {
     return [];
   }
@@ -779,12 +904,14 @@ let expiredReceiptsByTokenId = new Map();
 let soldReceiptsByTokenId = new Map();
 let soldCohortTokenIds = new Set();
 let strangerMintedTokenIds = new Set();
-let liveDexOutNaraByEth = new Map();
+let liveDexQuoteByPriceWei = new Map(); // priceWei string -> { status: "ok", outNara } | { status: "exceeds_depth" }
 let lastDexQuoteFetchMs = 0;
 let liveEthUsd = null;
 let liveSpotUsdPerNara = null;
 let liveNaraPerEpochWei = 0n;
 let liveActiveModelWeightWei = 0n;
+let liveActiveRewardWeightWei = 0n;
+let hasLoadedTelemetry = false;
 let liveOpenedEpoch = null;
 let liveEngineClock = null;
 let selectedReviewTokenId = null;
@@ -795,6 +922,9 @@ let isBuyingSeat = false;
 let activeBuyingTokenId = null;
 let currentSeatStatus = { kind: "idle", message: "", txHash: "" };
 let countdownTimer = null;
+let refreshPollTimer = null;
+let reviewPrevFocus = null;
+let helpPrevFocus = null;
 let bindActionsFn = () => {};
 let playClickFn = () => {};
 let playSuccessFn = () => {};
@@ -830,11 +960,20 @@ function parseDecimalToWei18(str) {
   return whole * WAD + BigInt(frac || "0");
 }
 
+function computePendingNaraWei(unsettledEpochs, weightWei) {
+  const denomWeight = liveActiveRewardWeightWei > 0n ? liveActiveRewardWeightWei : liveActiveModelWeightWei;
+  if (!unsettledEpochs || unsettledEpochs <= 0n || liveNaraPerEpochWei <= 0n || denomWeight <= 0n) {
+    return 0n;
+  }
+  return (BigInt(unsettledEpochs) * liveNaraPerEpochWei * BigInt(weightWei)) / denomWeight;
+}
+
 function formatMonthlyFlow(weightWei, alreadyOnGrid = false) {
+  const activeWeight = liveActiveRewardWeightWei > 0n ? liveActiveRewardWeightWei : liveActiveModelWeightWei;
   const monthlyNaraWei = computeLiveMonthlyNaraWei(
     weightWei,
     liveNaraPerEpochWei,
-    liveActiveModelWeightWei,
+    activeWeight,
     alreadyOnGrid
   );
   if (monthlyNaraWei <= 0n) return null;
@@ -875,6 +1014,13 @@ function formatEthClean(num) {
 function formatUsdClean(num) {
   if (!Number.isFinite(num) || num <= 0) return "";
   return "$" + Math.round(num).toLocaleString("en-US");
+}
+
+export function formatUsdPrecise(num) {
+  if (!Number.isFinite(num) || num <= 0) return "$0.00";
+  if (num >= 100) return "$" + Math.round(num).toLocaleString("en-US");
+  if (num >= 0.01) return "$" + num.toFixed(2);
+  return "< $0.01";
 }
 
 function formatUsdcExact(units6) {
@@ -977,25 +1123,22 @@ function formatCountdown(targetSec) {
 function updateHeaderBadge() {
   const badge = document.getElementById("anchorSeatsLiveBadge");
   const homeBadge = document.getElementById("homeVaultLiveBadge");
-  const homeMarketLine = document.getElementById("homeVaultMarketLine");
-  const footerNote = document.getElementById("anchorSeatsFooterNote");
-  const marketStrip = document.getElementById("anchorMarketStrip");
-  const waveText = document.getElementById("anchorWaveProgressText");
-  const waveBar = document.getElementById("anchorWaveProgressBar");
+  const heroVaultCountStat = document.getElementById("heroVaultOpenCount");
+  const homeMaxDiscEl = document.getElementById("homeVaultMaxDisc");
+  const homeChestUsdEl = document.getElementById("homeVaultTotalChestUsd");
   const statEthUsd = document.getElementById("vaultStatEthUsd");
   const statSpotUsd = document.getElementById("vaultStatSpotUsd");
   const statClaimed = document.getElementById("vaultStatClaimed");
+  const statChestTotal = document.getElementById("vaultStatTotalChest");
 
   const activeCount = liveOffersByTokenId.size;
   const bakingCount = bakingReceiptsByTokenId.size;
   const expiredCount = expiredReceiptsByTokenId.size;
   const totalWaveSeats = COHORT_1_REFERENCE_SEATS.length;
   const claimedCount = Math.min(totalWaveSeats, soldCohortTokenIds.size);
-  const claimedPct = Math.min(100, Math.round((claimedCount / totalWaveSeats) * 100));
 
   let minStagedEth = WAVE_1_TIERS[0].askEth;
   if (claimedCount > 0 && claimedCount < totalWaveSeats) {
-    // Compute lowest remaining tier askEth when earlier batch tiers have sold out
     let soldCursor = claimedCount;
     for (const t of WAVE_1_TIERS) {
       if (soldCursor < t.count) {
@@ -1015,11 +1158,11 @@ function updateHeaderBadge() {
   } else if (claimedCount >= totalWaveSeats) {
     badgeClass =
       "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/[0.06] text-slate-300 font-mono text-xs tabular-nums";
-    badgeText = `Sold Out`;
+    badgeText = "Sold Out";
   } else if (expiredCount > 0 && bakingCount === 0) {
     badgeClass =
       "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/[0.06] text-slate-300 font-mono text-xs tabular-nums";
-    badgeText = `Wave 1 Ended`;
+    badgeText = "Wave 1 Ended";
   } else {
     badgeClass =
       "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/[0.06] text-slate-300 font-mono text-xs tabular-nums";
@@ -1034,26 +1177,128 @@ function updateHeaderBadge() {
     homeBadge.className = badgeClass;
     homeBadge.textContent = badgeText;
   }
+  if (heroVaultCountStat) {
+    heroVaultCountStat.textContent = activeCount > 0 ? `${activeCount} Open` : badgeText;
+  }
 
-  if (waveText) {
-    waveText.textContent = `${claimedCount} / ${totalWaveSeats} claimed`;
-  }
-  if (waveBar) {
-    waveBar.style.width = `${Math.max(claimedCount > 0 ? 6 : 0, claimedPct)}%`;
-  }
   if (statClaimed) {
-    statClaimed.textContent = `${claimedCount} / ${totalWaveSeats}`;
+    statClaimed.textContent = `${claimedCount}/${totalWaveSeats} claimed`;
   }
   if (statEthUsd) {
     statEthUsd.textContent = liveEthUsd
-      ? `$${liveEthUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
-      : "—";
+      ? `ETH ~${formatUsdClean(liveEthUsd)}`
+      : "ETH —";
   }
   if (statSpotUsd) {
-    if (liveSpotUsdPerNara) {
-      statSpotUsd.textContent = `Spot ~$${liveSpotUsdPerNara.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-    } else {
-      statSpotUsd.textContent = "Base 8453";
+    statSpotUsd.textContent = liveSpotUsdPerNara
+      ? `Spot ~${formatUsdClean(liveSpotUsdPerNara)}`
+      : "Base 8453";
+  }
+
+  // Compute aggregate live chest USD across open Wave 1 Vaults + best live discount vs spot & DEX multiple
+  let totalOpenChestUsd = 0;
+  let hasPricedChest = false;
+  let bestDiscPct = null;
+  let bestDexMult = null;
+  for (const offer of liveOffersByTokenId.values()) {
+    const pNara = computePendingNaraWei(offer.unsettledEpochs, offer.rewardWeightWei);
+    const val = computeReceiptValueBreakdown({
+      principalWei: offer.principalWei,
+      priceWei: offer.priceWei,
+      claimableNaraWei: offer.claimableNaraWei,
+      pendingNaraWei: pNara,
+      claimableEthWei: offer.claimableEthWei,
+      claimableUsdcUnits: offer.claimableUsdcUnits,
+      spotUsdPerNara: liveSpotUsdPerNara,
+      ethUsd: liveEthUsd,
+      dexQuote: liveDexQuoteByPriceWei.get(offer.priceWei.toString()) || null,
+    });
+    if (val.chestUsd != null && val.chestUsd > 0) {
+      totalOpenChestUsd += val.chestUsd;
+      hasPricedChest = true;
+    }
+    if (val.totalDiscountPct != null && (bestDiscPct === null || val.totalDiscountPct > bestDiscPct)) {
+      bestDiscPct = val.totalDiscountPct;
+    }
+    if (val.dexMultiple != null && val.dexMultiple >= 1.1 && (bestDexMult === null || val.dexMultiple > bestDexMult)) {
+      bestDexMult = val.dexMultiple;
+    }
+  }
+
+  if (statChestTotal) {
+    statChestTotal.textContent = hasPricedChest
+      ? `Chests ~${formatUsdPrecise(totalOpenChestUsd)}`
+      : "";
+  }
+  if (homeChestUsdEl && hasPricedChest) {
+    homeChestUsdEl.textContent = `~${formatUsdPrecise(totalOpenChestUsd)} accrued across open chests`;
+  }
+  if (homeMaxDiscEl && bestDiscPct != null && bestDiscPct >= 3) {
+    homeMaxDiscEl.textContent = `Up to -${bestDiscPct}% vs Spot (incl. chest)`;
+  }
+
+  // Hydrate live metric anchors inside the 4 Value Pillar cards (Home & /vault)
+  for (const discId of ["homePillarDiscVal", "vaultPillarDiscVal"]) {
+    const el = document.getElementById(discId);
+    if (!el) continue;
+    if (bestDiscPct != null && bestDiscPct >= 3) {
+      el.textContent = `Up to -${bestDiscPct}%`;
+    } else if (bestDexMult != null) {
+      el.textContent = `Up to ${bestDexMult.toFixed(1)}×`;
+    }
+  }
+  for (const dexSubId of ["homePillarDexTag", "vaultPillarDexTag"]) {
+    const el = document.getElementById(dexSubId);
+    if (!el) continue;
+    if (bestDexMult != null && bestDexMult >= 1.15) {
+      el.textContent = `${bestDexMult.toFixed(1)}× vs DEX`;
+    }
+  }
+  for (const chestId of ["homePillarChestVal", "vaultPillarChestVal"]) {
+    const el = document.getElementById(chestId);
+    if (!el) continue;
+    if (hasPricedChest) {
+      el.textContent = `~${formatUsdClean(totalOpenChestUsd)}`;
+    }
+  }
+
+  // Hydrate compact live 6-tier snapshot on Home page if present
+  const tierPreview = document.getElementById("homeVaultTierPreview");
+  if (tierPreview) {
+    for (const tier of WAVE_1_TIERS) {
+      const rowDiscEl = document.getElementById(`homeTierDisc-${tier.key}`);
+      const rowUsdEl = document.getElementById(`homeTierUsd-${tier.key}`);
+      const askWei = parseDecimalToWei18(tier.askEth);
+      const prinWei = parseDecimalToWei18(tier.nara);
+      let sampleOffer = null;
+      for (const off of liveOffersByTokenId.values()) {
+        if (classifyWave1Tier(off.principalWei, off.durationEpochs).tierKey === tier.key) {
+          sampleOffer = off;
+          break;
+        }
+      }
+      const pNara = sampleOffer ? computePendingNaraWei(sampleOffer.unsettledEpochs, sampleOffer.rewardWeightWei) : 0n;
+      const val = computeReceiptValueBreakdown({
+        principalWei: sampleOffer ? sampleOffer.principalWei : prinWei,
+        priceWei: sampleOffer ? sampleOffer.priceWei : askWei,
+        claimableNaraWei: sampleOffer ? sampleOffer.claimableNaraWei : 0n,
+        pendingNaraWei: pNara,
+        claimableEthWei: sampleOffer ? sampleOffer.claimableEthWei : 0n,
+        claimableUsdcUnits: sampleOffer ? sampleOffer.claimableUsdcUnits : 0n,
+        spotUsdPerNara: liveSpotUsdPerNara,
+        ethUsd: liveEthUsd,
+        dexQuote: liveDexQuoteByPriceWei.get((sampleOffer ? sampleOffer.priceWei : askWei).toString()) || null,
+      });
+      if (rowUsdEl && val.askUsd != null) {
+        rowUsdEl.textContent = `~${formatUsdClean(val.askUsd)}`;
+      }
+      if (rowDiscEl) {
+        if (val.totalDiscountPct != null && val.totalDiscountPct >= 2) {
+          rowDiscEl.textContent = `-${val.totalDiscountPct}% vs Spot`;
+        } else if (val.totalIncludedUsd != null) {
+          rowDiscEl.textContent = `Val ~${formatUsdClean(val.totalIncludedUsd)}`;
+        }
+      }
     }
   }
 
@@ -1064,13 +1309,9 @@ function updateHeaderBadge() {
     const isAct = activeAnchorTierFilter === m;
     btn.setAttribute("aria-pressed", isAct ? "true" : "false");
     btn.className = isAct
-      ? "px-3 py-1.5 min-h-[34px] rounded-lg bg-naraGreen text-slate-950 text-xs font-sans font-bold cursor-pointer whitespace-nowrap transition-colors"
-      : "px-3 py-1.5 min-h-[34px] rounded-lg bg-white/[0.04] hover:bg-white/[0.09] border border-white/10 text-slate-300 hover:text-white text-xs font-sans font-medium cursor-pointer whitespace-nowrap transition-colors";
+      ? "px-3 py-2 min-h-[40px] rounded-xl bg-naraGreen text-slate-950 text-xs font-sans font-bold cursor-pointer whitespace-nowrap transition-colors"
+      : "px-3 py-2 min-h-[40px] rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/10 text-slate-300 hover:text-white text-xs font-sans font-medium cursor-pointer whitespace-nowrap transition-colors";
   }
-
-  if (marketStrip) marketStrip.textContent = "";
-  if (homeMarketLine) homeMarketLine.textContent = "";
-  if (footerNote) footerNote.textContent = "";
 }
 
 function renderReviewDrawer(forceRebuild = false) {
@@ -1109,15 +1350,35 @@ function renderReviewDrawer(forceRebuild = false) {
   const cls = classifyWave1Tier(offer.principalWei, offer.durationEpochs);
   const durationDays = Math.max(1, Math.round(offer.durationEpochs / 96));
   const priceEthNum = Number(formatUnits(offer.priceWei, 18));
-  const priceUsdStr = liveEthUsd && priceEthNum > 0 ? `~${formatUsdClean(priceEthNum * liveEthUsd)}` : "0% slippage";
   const monthly = formatMonthlyFlow(offer.rewardWeightWei, true);
+  const pendingNaraWei = computePendingNaraWei(offer.unsettledEpochs, offer.rewardWeightWei);
+  const val = computeReceiptValueBreakdown({
+    principalWei: offer.principalWei,
+    priceWei: offer.priceWei,
+    claimableNaraWei: offer.claimableNaraWei,
+    pendingNaraWei,
+    claimableEthWei: offer.claimableEthWei,
+    claimableUsdcUnits: offer.claimableUsdcUnits,
+    spotUsdPerNara: liveSpotUsdPerNara,
+    ethUsd: liveEthUsd,
+    dexQuote: liveDexQuoteByPriceWei.get(offer.priceWei.toString()) || null,
+  });
 
-  const chestParts = [];
-  if (offer.claimableNaraWei > 0n) chestParts.push(`+${formatDisplayNara(offer.claimableNaraWei)} $NARA`);
-  if (offer.claimableEthWei > 0n) chestParts.push(`+${formatEthExact(offer.claimableEthWei)} ETH`);
-  if (offer.claimableUsdcUnits > 0n) chestParts.push(`+$${formatUsdcExact(offer.claimableUsdcUnits)}`);
-  const chestMain = chestParts.length > 0 ? chestParts[0] : "0.000 $NARA";
-  const chestSub = chestParts.length > 1 ? chestParts.slice(1).join(" · ") : "100% yours on buy";
+  const priceUsdStr = val.askUsd != null ? `~${formatUsdClean(val.askUsd)}` : "0% slippage";
+  const chestTokenParts = [];
+  if (val.chestNaraTotalWei > 0n) chestTokenParts.push(`+${formatDisplayNara(val.chestNaraTotalWei)} $NARA`);
+  if (offer.claimableEthWei >= 100_000_000_000_000n) chestTokenParts.push(`+${formatEthExact(offer.claimableEthWei)} ETH`);
+  if (offer.claimableUsdcUnits >= 10_000n) chestTokenParts.push(`+$${formatUsdcExact(offer.claimableUsdcUnits)}`);
+  const chestMain =
+    val.chestUsd != null && val.chestUsd > 0
+      ? `~${formatUsdPrecise(val.chestUsd)}`
+      : chestTokenParts.length > 0
+        ? chestTokenParts[0]
+        : "$0.00";
+  const chestSub =
+    chestTokenParts.length > 0
+      ? chestTokenParts.join(" · ")
+      : "100% yours on purchase";
 
   drawer.className =
     "fixed inset-0 z-[55] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-sm";
@@ -1177,29 +1438,38 @@ function renderReviewDrawer(forceRebuild = false) {
   const grid = document.createElement("div");
   grid.className = "grid grid-cols-2 gap-2.5";
 
+  const principalSub =
+    val.principalSpotUsd != null
+      ? `Spot ~${formatUsdClean(val.principalSpotUsd)} · ${durationDays}d`
+      : `${durationDays}d · 0% maturity fee`;
+  const paySub =
+    val.netSavingsUsd != null && val.netSavingsUsd >= 10
+      ? `${priceUsdStr} · save ~${formatUsdClean(val.netSavingsUsd)}`
+      : `${priceUsdStr} · 0% slippage`;
+
   const tiles = [
     {
-      label: "Sealed Principal",
+      label: val.totalIncludedUsd != null ? `Total Value (~${formatUsdClean(val.totalIncludedUsd)})` : "Sealed Principal",
       main: `${formatDisplayNara(offer.principalWei)} $NARA`,
-      sub: `${durationDays}d · 0% maturity fee`,
+      sub: principalSub,
       accent: false,
     },
     {
-      label: "Total Payment",
+      label: val.totalDiscountPct != null && val.totalDiscountPct >= 2 ? `You Pay (-${val.totalDiscountPct}% vs Spot)` : "You Pay (Fixed ETH)",
       main: `${formatEthExact(offer.priceWei)} ETH`,
-      sub: `${priceUsdStr} · 0% slippage`,
+      sub: paySub,
       accent: true,
     },
     {
-      label: "Monthly Pulses",
-      main: monthly ? monthly.primary.replace(/^Est\.\s*/, "") : "Every 15m",
-      sub: monthly?.secondary || "Claim & sell anytime",
+      label: "In Chest Now (100% Yours)",
+      main: chestMain,
+      sub: chestSub,
       accent: false,
     },
     {
-      label: "In Chest Now",
-      main: chestMain,
-      sub: chestSub,
+      label: "Est. Monthly Pulses",
+      main: monthly ? monthly.primary.replace(/^Est\.\s*/, "") : "Every 15m",
+      sub: monthly?.secondary ? `${monthly.secondary}` : "Harvest & sell anytime",
       accent: false,
     },
   ];
@@ -1224,6 +1494,43 @@ function renderReviewDrawer(forceRebuild = false) {
     grid.appendChild(cell);
   }
   body.appendChild(grid);
+
+  // Compact DEX Reality Check + Dual Exit Summary inside checkout
+  const metaNote = document.createElement("div");
+  metaNote.className = "px-3 py-2.5 rounded-xl bg-[#080C14] border border-white/[0.07] space-y-1 text-[11px] font-mono text-slate-300";
+  const dexRow = document.createElement("div");
+  dexRow.className = "flex items-center justify-between gap-2";
+  const dexL = document.createElement("span");
+  dexL.className = "text-slate-400";
+  dexL.textContent = "DEX swap comparison";
+  const dexR = document.createElement("span");
+  dexR.className = val.dexBeatsVault ? "text-amber-300 font-semibold" : "text-emerald-300 font-semibold";
+  if (val.dexExceedsDepth) {
+    dexR.textContent = "Exceeds single-clip V4 depth";
+  } else if (val.dexOutNara != null && val.dexMultiple != null && val.dexMultiple >= 1.05) {
+    dexR.textContent = `${val.dexOutNara.toFixed(2)} $NARA on DEX (${val.dexMultiple.toFixed(1)}× more here)`;
+  } else if (val.dexOutNara != null) {
+    dexR.textContent = `~${val.dexOutNara.toFixed(2)} $NARA via V4 swap`;
+  } else {
+    dexR.textContent = "0% AMM slippage · fixed ETH";
+  }
+  dexRow.appendChild(dexL);
+  dexRow.appendChild(dexR);
+
+  const exitRow = document.createElement("div");
+  exitRow.className = "flex items-center justify-between gap-2";
+  const exitL = document.createElement("span");
+  exitL.className = "text-slate-400";
+  exitL.textContent = "Exits & split";
+  const exitR = document.createElement("span");
+  exitR.className = "text-slate-300";
+  exitR.textContent = `Resell anytime or 0% fee at ${durationDays}d · 95% Safe / 5% Holders`;
+  exitRow.appendChild(exitL);
+  exitRow.appendChild(exitR);
+
+  metaNote.appendChild(dexRow);
+  metaNote.appendChild(exitRow);
+  body.appendChild(metaNote);
 
   // Inline Status Banner (visible right inside checkout on mobile & desktop)
   const inlineStatus = document.createElement("div");
@@ -1485,26 +1792,6 @@ function renderSeatsGrid() {
         ? "FIXED ETH"
         : `WAVE 2 → ${ref.nextWaveEth}Ξ`;
 
-    const spotInsideUsd = liveSpotUsdPerNara && naraNum > 0 ? naraNum * liveSpotUsdPerNara : null;
-    const spotDiscountPct =
-      spotInsideUsd && askUsdNum && spotInsideUsd > askUsdNum
-        ? Math.round((1 - askUsdNum / spotInsideUsd) * 100)
-        : null;
-
-    // Live DEX execution comparison: how much NARA does spending `askEth` on DEX swap actually yield?
-    const dexSwapOutNara = liveDexOutNaraByEth.get(ref.askEth) ?? null;
-    const dexSavingsPct =
-      dexSwapOutNara && dexSwapOutNara > 0 && naraNum > dexSwapOutNara
-        ? Math.round((1 - dexSwapOutNara / naraNum) * 100)
-        : null;
-
-    let equityLabel = `0% Slippage · Wave 2 → ${ref.nextWaveEth} ETH`;
-    if (spotInsideUsd && spotDiscountPct != null && spotDiscountPct >= 3) {
-      equityLabel = `Spot val ~${formatUsdClean(spotInsideUsd)} (-${spotDiscountPct}% Wave 1)`;
-    } else if (spotInsideUsd) {
-      equityLabel = `Spot val ~${formatUsdClean(spotInsideUsd)} · 0% Slippage`;
-    }
-
     const weightWei = src?.rewardWeightWei
       ? src.rewardWeightWei
       : computeV4QuadraticWeightWei(principalWei, durationEpochs);
@@ -1515,6 +1802,26 @@ function renderSeatsGrid() {
         liveOpenedEpoch >= src.activationEpoch &&
         liveOpenedEpoch < src.maturityEpoch
     );
+    const pendingNaraWei = computePendingNaraWei(src?.unsettledEpochs ?? 0n, weightWei);
+    const dexQuote = liveDexQuoteByPriceWei.get(priceWei.toString()) || null;
+    const val = computeReceiptValueBreakdown({
+      principalWei,
+      priceWei,
+      claimableNaraWei: src?.claimableNaraWei ?? 0n,
+      pendingNaraWei,
+      claimableEthWei: src?.claimableEthWei ?? 0n,
+      claimableUsdcUnits: src?.claimableUsdcUnits ?? 0n,
+      spotUsdPerNara: liveSpotUsdPerNara,
+      ethUsd: liveEthUsd,
+      dexQuote,
+    });
+
+    let equityLabel = `0% Slippage · Wave 2 → ${ref.nextWaveEth} ETH`;
+    if (val.totalIncludedUsd != null && val.totalDiscountPct != null && val.totalDiscountPct >= 3) {
+      equityLabel = `Total val ~${formatUsdClean(val.totalIncludedUsd)} (-${val.totalDiscountPct}% vs Spot)`;
+    } else if (val.principalSpotUsd != null) {
+      equityLabel = `Spot val ~${formatUsdClean(val.principalSpotUsd)} · 0% Slippage`;
+    }
 
     allCards.push({
       tierKey: ref.tierKey,
@@ -1524,11 +1831,19 @@ function renderSeatsGrid() {
       naraNum,
       askEthNum,
       priceWei,
-      askUsdNum,
-      spotInsideUsd,
-      spotDiscountPct,
-      dexSwapOutNara,
-      dexSavingsPct,
+      askUsdNum: val.askUsd,
+      spotInsideUsd: val.principalSpotUsd,
+      chestUsd: val.chestUsd,
+      totalIncludedUsd: val.totalIncludedUsd,
+      netSavingsUsd: val.netSavingsUsd,
+      spotDiscountPct: val.totalDiscountPct ?? val.spotDiscountPct,
+      dexSwapOutNara: val.dexOutNara,
+      dexExceedsDepth: val.dexExceedsDepth,
+      dexMultiple: val.dexMultiple,
+      dexSavingsPct: val.dexSavingsPct,
+      dexBeatsVault: val.dexBeatsVault,
+      pendingNaraWei,
+      chestNaraTotalWei: val.chestNaraTotalWei,
       naraDisplay: formatDisplayNara(principalWei),
       weightDisplay: formatDisplayNara(weightWei),
       weightWei,
@@ -1539,7 +1854,7 @@ function renderSeatsGrid() {
       equityLabel,
       nextWaveEth: ref.nextWaveEth,
       tierLabel: ref.tierLabel,
-      expiryLabel: state === "live" && src?.expiry ? formatExpiryShort(src.expiry) : "72H WAVE 1",
+      expiryLabel: state === "live" && src?.expiry ? formatExpiryShort(src.expiry) : "WAVE 1",
       claimableNaraWei: src?.claimableNaraWei ?? 0n,
       claimableEthWei: src?.claimableEthWei ?? 0n,
       claimableUsdcUnits: src?.claimableUsdcUnits ?? 0n,
@@ -1557,15 +1872,22 @@ function renderSeatsGrid() {
     const cls = extraWrap.cls;
     const ethVal = Number(formatUnits(extra.priceWei, 18));
     const naraNum = Number(formatUnits(extra.principalWei, 18));
-    const askUsdNum = liveEthUsd && ethVal > 0 ? ethVal * liveEthUsd : null;
-    const spotInsideUsd = liveSpotUsdPerNara && naraNum > 0 ? naraNum * liveSpotUsdPerNara : null;
-    const spotDiscountPct =
-      spotInsideUsd && askUsdNum && spotInsideUsd > askUsdNum
-        ? Math.round((1 - askUsdNum / spotInsideUsd) * 100)
-        : null;
+    const pendingNaraWei = computePendingNaraWei(extra.unsettledEpochs ?? 0n, extra.rewardWeightWei);
+    const dexQuote = liveDexQuoteByPriceWei.get(extra.priceWei.toString()) || null;
+    const val = computeReceiptValueBreakdown({
+      principalWei: extra.principalWei,
+      priceWei: extra.priceWei,
+      claimableNaraWei: extra.claimableNaraWei,
+      pendingNaraWei,
+      claimableEthWei: extra.claimableEthWei,
+      claimableUsdcUnits: extra.claimableUsdcUnits,
+      spotUsdPerNara: liveSpotUsdPerNara,
+      ethUsd: liveEthUsd,
+      dexQuote,
+    });
     let equityLabel = "0% Slippage · Direct Settlement";
-    if (spotInsideUsd && spotDiscountPct != null && spotDiscountPct >= 3) {
-      equityLabel = `Spot val ~${formatUsdClean(spotInsideUsd)} (-${spotDiscountPct}% vs Spot)`;
+    if (val.totalIncludedUsd != null && val.totalDiscountPct != null && val.totalDiscountPct >= 3) {
+      equityLabel = `Total val ~${formatUsdClean(val.totalIncludedUsd)} (-${val.totalDiscountPct}% vs Spot)`;
     }
     const alreadyInActiveWeight = Boolean(
       liveOpenedEpoch != null &&
@@ -1581,18 +1903,26 @@ function renderSeatsGrid() {
       naraNum,
       askEthNum: ethVal,
       priceWei: extra.priceWei,
-      askUsdNum,
-      spotInsideUsd,
-      spotDiscountPct,
-      dexSwapOutNara: null,
-      dexSavingsPct: null,
+      askUsdNum: val.askUsd,
+      spotInsideUsd: val.principalSpotUsd,
+      chestUsd: val.chestUsd,
+      totalIncludedUsd: val.totalIncludedUsd,
+      netSavingsUsd: val.netSavingsUsd,
+      spotDiscountPct: val.totalDiscountPct ?? val.spotDiscountPct,
+      dexSwapOutNara: val.dexOutNara,
+      dexExceedsDepth: val.dexExceedsDepth,
+      dexMultiple: val.dexMultiple,
+      dexSavingsPct: val.dexSavingsPct,
+      dexBeatsVault: val.dexBeatsVault,
+      pendingNaraWei,
+      chestNaraTotalWei: val.chestNaraTotalWei,
       naraDisplay: formatDisplayNara(extra.principalWei),
       weightDisplay: formatDisplayNara(extra.rewardWeightWei),
       weightWei: extra.rewardWeightWei,
       alreadyOnGrid: alreadyInActiveWeight,
       isMintedOnChain: true,
       ethPriceDisplay: `${formatEthExact(extra.priceWei)} ETH`,
-      usdPriceDisplay: askUsdNum ? `~${formatUsdClean(askUsdNum)}` : "FIXED ETH",
+      usdPriceDisplay: val.askUsd ? `~${formatUsdClean(val.askUsd)}` : "FIXED ETH",
       equityLabel,
       nextWaveEth: cls.nextWaveEth,
       tierLabel: "OPEN",
@@ -1646,7 +1976,7 @@ function renderSeatsGrid() {
           ? "bg-[#0B101B] border-white/[0.05] opacity-55"
           : "bg-[#0D131F] border-white/[0.08] hover:border-white/[0.16]";
 
-    el.className = `p-5 sm:p-6 rounded-2xl border ${cellSurface} flex flex-col justify-between gap-3.5 tabular-nums min-w-0 transition-colors`;
+    el.className = `p-4 sm:p-5 rounded-2xl border ${cellSurface} flex flex-col justify-between gap-3.5 tabular-nums min-w-0 transition-colors`;
 
     // Row 1: Quiet Identity + Spot Discount Badge + (#ID + Subtle ? Bubble)
     const topRow = document.createElement("div");
@@ -1679,7 +2009,7 @@ function renderSeatsGrid() {
     topRight.className = "flex items-center gap-1.5 shrink-0";
 
     const idTag = document.createElement("span");
-    idTag.className = "text-slate-500 font-mono";
+    idTag.className = "text-slate-400 font-mono text-xs";
     idTag.textContent = `#${card.tokenId}`;
 
     const helpBtn = document.createElement("button");
@@ -1687,11 +2017,11 @@ function renderSeatsGrid() {
     helpBtn.setAttribute("data-card-help-btn", String(card.tokenId));
     helpBtn.setAttribute("data-on-click", `toggleCardHelp:${card.tokenId}`);
     helpBtn.setAttribute("aria-expanded", isHelpOpen ? "true" : "false");
-    helpBtn.setAttribute("aria-label", `Vault Receipt #${card.tokenId} benefits and live chest monitor`);
-    helpBtn.title = "What you get & ecosystem impact";
+    helpBtn.setAttribute("aria-label", `Vault Receipt #${card.tokenId} full USD breakdown and live chest monitor`);
+    helpBtn.title = "Full value breakdown (Principal + Chest USD + DEX comparison)";
     helpBtn.className = isHelpOpen
-      ? "w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-400 text-emerald-300 text-[11px] font-sans font-bold flex items-center justify-center cursor-pointer transition-colors"
-      : "w-5 h-5 rounded-full bg-white/[0.06] hover:bg-emerald-500/15 border border-white/15 hover:border-emerald-400/50 text-slate-300 hover:text-emerald-300 text-[11px] font-sans font-bold flex items-center justify-center cursor-pointer transition-colors";
+      ? "min-w-[36px] min-h-[36px] px-2 rounded-lg bg-emerald-500/20 border border-emerald-400 text-emerald-300 text-xs font-sans font-bold flex items-center justify-center cursor-pointer transition-colors"
+      : "min-w-[36px] min-h-[36px] px-2 rounded-lg bg-white/[0.05] hover:bg-emerald-500/15 border border-white/15 hover:border-emerald-400/50 text-slate-300 hover:text-emerald-300 text-xs font-sans font-semibold flex items-center justify-center cursor-pointer transition-colors";
     helpBtn.textContent = "?";
 
     topRight.appendChild(idTag);
@@ -1700,23 +2030,26 @@ function renderSeatsGrid() {
     topRow.appendChild(topLeft);
     topRow.appendChild(topRight);
 
-    // Row 2: Clean Focal Principal + Market Spot + Live Monthly Earnings (Zero Text Clutter)
+    // Row 2: Focal Principal + Total Value Included (Principal + Live Chest USD) + DEX Comparison + Monthly Pulses
     const midBox = document.createElement("div");
-    midBox.className = "space-y-1.5 min-w-0";
+    midBox.className = "space-y-2 min-w-0";
 
     const principalRow = document.createElement("div");
-    principalRow.className = "flex items-baseline justify-between gap-2";
+    principalRow.className = "flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 min-w-0";
 
     const naraStrong = document.createElement("span");
-    naraStrong.className = "font-sans text-2xl font-bold text-white tracking-tight whitespace-nowrap";
+    naraStrong.className = "font-sans text-xl sm:text-2xl font-bold text-white tracking-tight whitespace-nowrap";
     naraStrong.textContent = `${card.naraDisplay} $NARA`;
     principalRow.appendChild(naraStrong);
 
-    if (card.spotInsideUsd && card.spotInsideUsd > 0) {
-      const spotTag = document.createElement("span");
-      spotTag.className = "text-xs font-mono text-slate-400 whitespace-nowrap shrink-0";
-      spotTag.textContent = `Spot ~${formatUsdClean(card.spotInsideUsd)}`;
-      principalRow.appendChild(spotTag);
+    if (card.totalIncludedUsd && card.totalIncludedUsd > 0) {
+      const valTag = document.createElement("span");
+      valTag.className = "text-xs font-mono text-slate-300 whitespace-nowrap shrink-0";
+      valTag.textContent =
+        card.chestUsd && card.chestUsd >= 0.01
+          ? `Total val ~${formatUsdClean(card.totalIncludedUsd)}`
+          : `Spot ~${formatUsdClean(card.totalIncludedUsd)}`;
+      principalRow.appendChild(valTag);
     } else {
       const weightPill = document.createElement("span");
       weightPill.className =
@@ -1725,9 +2058,70 @@ function renderSeatsGrid() {
       principalRow.appendChild(weightPill);
     }
 
+    midBox.appendChild(principalRow);
+
+    // Live On-Chain Chest Row WITH Live USD Equivalent
+    const totalLiveNaraWei = card.chestNaraTotalWei ?? card.claimableNaraWei;
+    const hasLiveAccrued =
+      totalLiveNaraWei > 0n || card.claimableEthWei > 0n || card.claimableUsdcUnits > 0n;
+
+    const chestLine = document.createElement("div");
+    if (hasLiveAccrued) {
+      chestLine.className = "px-2.5 py-1.5 rounded-lg bg-[#080C14] border border-white/[0.06] flex items-center justify-between gap-2 text-xs font-mono min-w-0";
+      const sr = document.createElement("span");
+      sr.className = "sr-only";
+      sr.textContent = "INSIDE RECEIPT CHEST · ";
+      chestLine.appendChild(sr);
+
+      const parts = [];
+      if (totalLiveNaraWei > 0n) parts.push(`+${formatDisplayNara(totalLiveNaraWei)} $NARA`);
+      if (card.claimableEthWei >= 100_000_000_000_000n) parts.push(`+${formatEthExact(card.claimableEthWei)} ETH`);
+      if (card.claimableUsdcUnits >= 10_000n) parts.push(`+$${formatUsdcExact(card.claimableUsdcUnits)}`);
+      const cLeft = document.createElement("span");
+      cLeft.className = "text-slate-300 truncate min-w-0";
+      cLeft.textContent = `In chest: ${parts.join(" · ")}`;
+      chestLine.appendChild(cLeft);
+
+      if (card.chestUsd != null && card.chestUsd > 0) {
+        const cUsd = document.createElement("span");
+        cUsd.className = "text-emerald-300 font-semibold whitespace-nowrap shrink-0";
+        cUsd.textContent = `~${formatUsdPrecise(card.chestUsd)}`;
+        chestLine.appendChild(cUsd);
+      }
+    } else {
+      chestLine.className = "sr-only";
+      chestLine.textContent = "INSIDE RECEIPT CHEST · NARA + ETH + USDC";
+    }
+    midBox.appendChild(chestLine);
+
+    // Real DEX Execution Comparison Line (surfaces why Vault beats open-market DEX swap)
+    if (card.dexExceedsDepth || (card.dexSwapOutNara != null && card.dexSwapOutNara > 0)) {
+      const dexLine = document.createElement("div");
+      dexLine.className = "flex items-baseline justify-between gap-2 text-xs font-mono min-w-0";
+      const dLeft = document.createElement("span");
+      dLeft.className = "text-slate-400 truncate";
+      const dRight = document.createElement("span");
+      dRight.className = card.dexBeatsVault
+        ? "text-amber-300 whitespace-nowrap shrink-0 font-semibold"
+        : "text-emerald-300/90 whitespace-nowrap shrink-0 font-semibold";
+      if (card.dexExceedsDepth) {
+        dLeft.textContent = `DEX swap (${card.ethPriceDisplay})`;
+        dRight.textContent = "Exceeds V4 clip depth";
+      } else {
+        dLeft.textContent = `DEX swap gives ~${card.dexSwapOutNara.toFixed(2)} $NARA`;
+        dRight.textContent =
+          card.dexMultiple != null && card.dexMultiple >= 1.05
+            ? `${card.dexMultiple.toFixed(1)}× more here`
+            : "0% slippage";
+      }
+      dexLine.appendChild(dLeft);
+      dexLine.appendChild(dRight);
+      midBox.appendChild(dexLine);
+    }
+
     const monthly = formatMonthlyFlow(card.weightWei, card.alreadyOnGrid);
     const monthlyRow = document.createElement("div");
-    monthlyRow.className = "flex items-baseline justify-between gap-2 pt-0.5 min-w-0";
+    monthlyRow.className = "flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 pt-0.5 min-w-0";
     if (monthly) {
       const mPrimary = document.createElement("span");
       mPrimary.className = "text-xs font-mono font-semibold text-emerald-300 whitespace-nowrap";
@@ -1735,67 +2129,45 @@ function renderSeatsGrid() {
       monthlyRow.appendChild(mPrimary);
       if (monthly.secondary) {
         const mSec = document.createElement("span");
-        mSec.className = "text-[11px] font-mono text-slate-400 whitespace-nowrap";
+        mSec.className = "text-xs font-mono text-slate-400 whitespace-nowrap";
         mSec.textContent = monthly.secondary;
         monthlyRow.appendChild(mSec);
       }
     } else {
       const mPending = document.createElement("span");
-      mPending.className = "text-xs font-sans text-slate-500 truncate";
-      mPending.textContent = "Est. monthly pulses loading…";
+      mPending.className = "text-xs font-sans text-slate-400 truncate";
+      mPending.textContent = hasLoadedTelemetry ? "0.000 $NARA / mo (15m pulses)" : "Reading live Base pulses…";
       monthlyRow.appendChild(mPending);
     }
-
-    midBox.appendChild(principalRow);
     midBox.appendChild(monthlyRow);
 
-    // Live On-Chain Chest Row (Visible on card face when > 0 accrued; otherwise inside ? modal)
-    const pendingNaraWei =
-      card.unsettledEpochs > 0n && liveNaraPerEpochWei > 0n && liveActiveModelWeightWei > 0n
-        ? (card.unsettledEpochs * liveNaraPerEpochWei * card.weightWei) / liveActiveModelWeightWei
-        : 0n;
-    const totalLiveNaraWei = card.claimableNaraWei + pendingNaraWei;
-    const hasLiveAccrued =
-      totalLiveNaraWei > 0n || card.claimableEthWei > 0n || card.claimableUsdcUnits > 0n;
-
-    const chestLine = document.createElement("div");
-    if (hasLiveAccrued) {
-      chestLine.className = "flex items-baseline justify-between gap-2 text-[11px] font-mono min-w-0";
-      const sr = document.createElement("span");
-      sr.className = "sr-only";
-      sr.textContent = "INSIDE RECEIPT CHEST · ";
-      chestLine.appendChild(sr);
-
-      const parts = [`+${formatDisplayNara(totalLiveNaraWei)} $NARA`];
-      if (card.claimableEthWei > 0n) parts.push(`+${formatEthExact(card.claimableEthWei)} ETH`);
-      if (card.claimableUsdcUnits > 0n) parts.push(`+$${formatUsdcExact(card.claimableUsdcUnits)}`);
-      const cLeft = document.createElement("span");
-      cLeft.className = "text-emerald-300/90 truncate";
-      cLeft.textContent = `In chest: ${parts.join(" · ")}`;
-      chestLine.appendChild(cLeft);
-    } else {
-      chestLine.className = "sr-only";
-      chestLine.textContent = "INSIDE RECEIPT CHEST · NARA + ETH + USDC";
-    }
-    midBox.appendChild(chestLine);
-
-    // Row 3: Crisp White ETH Price + Single Action on One Clean Line
+    // Row 3: Crisp White ETH Price + Savings + Single Action
     const bottomRow = document.createElement("div");
-    bottomRow.className = "pt-3.5 border-t border-white/[0.07] flex items-center justify-between gap-3";
+    bottomRow.className = "pt-3.5 border-t border-white/[0.07] flex items-center justify-between gap-2.5 min-w-0";
 
     const priceWrap = document.createElement("div");
-    priceWrap.className = "flex items-baseline gap-2 min-w-0";
+    priceWrap.className = "flex flex-col min-w-0";
 
+    const priceTop = document.createElement("div");
+    priceTop.className = "flex flex-wrap items-baseline gap-x-2 gap-y-0.5 min-w-0";
     const ethStrong = document.createElement("span");
     ethStrong.className = "text-lg font-mono font-bold text-white whitespace-nowrap";
     ethStrong.textContent = card.ethPriceDisplay;
-    priceWrap.appendChild(ethStrong);
+    priceTop.appendChild(ethStrong);
 
     if (card.usdPriceDisplay && card.usdPriceDisplay.startsWith("~")) {
       const usdSpan = document.createElement("span");
       usdSpan.className = "text-xs font-mono text-slate-400 whitespace-nowrap";
       usdSpan.textContent = card.usdPriceDisplay;
-      priceWrap.appendChild(usdSpan);
+      priceTop.appendChild(usdSpan);
+    }
+    priceWrap.appendChild(priceTop);
+
+    if (card.netSavingsUsd != null && card.netSavingsUsd >= 10) {
+      const saveLine = document.createElement("span");
+      saveLine.className = "text-[11px] font-mono text-emerald-300/90 truncate";
+      saveLine.textContent = `Save ~${formatUsdClean(card.netSavingsUsd)} vs spot + chest`;
+      priceWrap.appendChild(saveLine);
     }
 
     bottomRow.appendChild(priceWrap);
@@ -1807,8 +2179,8 @@ function renderSeatsGrid() {
       btn.setAttribute("data-seat-select-btn", String(card.tokenId));
       btn.setAttribute("data-on-click", `selectAnchorSeat:${card.tokenId}`);
       btn.className = isSelected
-        ? "min-h-[38px] px-4 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-400 text-emerald-300 text-xs font-sans font-semibold cursor-pointer nara-press shrink-0"
-        : "min-h-[38px] px-4 py-1.5 rounded-lg bg-naraGreen hover:bg-[#52ff33] text-slate-950 text-xs font-sans font-bold cursor-pointer nara-press shrink-0";
+        ? "min-h-[44px] px-4 py-2 rounded-xl bg-emerald-500/20 border border-emerald-400 text-emerald-300 text-xs font-sans font-semibold cursor-pointer nara-press shrink-0"
+        : "min-h-[44px] px-4 py-2 rounded-xl bg-naraGreen hover:bg-[#52ff33] text-slate-950 text-xs font-sans font-bold cursor-pointer nara-press shrink-0";
       btn.textContent = isSelected ? "Selected ✓" : "Select";
       bottomRow.appendChild(btn);
     } else {
@@ -1857,7 +2229,7 @@ function renderCardHelpModal(allCards) {
   const panel = document.createElement("div");
   panel.setAttribute("data-card-help-box", String(card.tokenId));
   panel.className =
-    "w-full max-w-md rounded-2xl bg-[#0D131F] border border-white/[0.12] shadow-[0_24px_70px_rgba(2,6,23,0.92)] overflow-hidden tabular-nums font-sans";
+    "w-full max-w-md max-h-[90dvh] overflow-y-auto overscroll-contain rounded-2xl bg-[#0D131F] border border-white/[0.12] shadow-[0_24px_70px_rgba(2,6,23,0.92)] tabular-nums font-sans";
 
   // 1. Clean Modal Header
   const header = document.createElement("div");
@@ -1880,7 +2252,7 @@ function renderCardHelpModal(allCards) {
   closeBtn.setAttribute("data-on-click", `toggleCardHelp:${card.tokenId}`);
   closeBtn.setAttribute("aria-label", "Close modal");
   closeBtn.className =
-    "w-8 h-8 rounded-lg bg-white/[0.05] hover:bg-white/[0.12] border border-white/10 text-slate-400 hover:text-white text-xs flex items-center justify-center cursor-pointer transition-colors shrink-0";
+    "w-9 h-9 min-w-[36px] min-h-[36px] rounded-xl bg-white/[0.05] hover:bg-white/[0.12] border border-white/10 text-slate-400 hover:text-white text-sm flex items-center justify-center cursor-pointer transition-colors shrink-0";
   closeBtn.textContent = "✕";
 
   header.appendChild(headLeft);
@@ -1891,24 +2263,28 @@ function renderCardHelpModal(allCards) {
   const body = document.createElement("div");
   body.className = "p-5 space-y-5";
 
-  // 2A. Side-by-Side Price Comparison (Market Spot vs. You Pay)
+  // 2A. Side-by-Side Total Value Included (Principal + Chest USD) vs. Your Fixed Cost
   const compareGrid = document.createElement("div");
   compareGrid.className = "grid grid-cols-2 gap-3";
 
   const spotBox = document.createElement("div");
-  spotBox.className = "p-3.5 rounded-xl bg-[#080C14] border border-white/[0.07]";
+  spotBox.className = "p-3.5 rounded-xl bg-[#080C14] border border-white/[0.08]";
   const spotLabel = document.createElement("div");
   spotLabel.className = "text-xs font-medium text-slate-400";
-  spotLabel.textContent = "Market Spot";
+  spotLabel.textContent = card.chestUsd && card.chestUsd >= 0.01 ? "Total Value Now" : "Market Spot Value";
   const spotVal = document.createElement("div");
-  spotVal.className = "text-xl font-mono font-semibold text-slate-300 mt-1";
-  spotVal.textContent = card.spotInsideUsd ? `~${formatUsdClean(card.spotInsideUsd)}` : `${card.naraDisplay} $NARA`;
+  spotVal.className = "text-xl font-mono font-bold text-white mt-1";
+  spotVal.textContent = card.totalIncludedUsd
+    ? `~${formatUsdClean(card.totalIncludedUsd)}`
+    : card.spotInsideUsd
+      ? `~${formatUsdClean(card.spotInsideUsd)}`
+      : `${card.naraDisplay} $NARA`;
   const spotSub = document.createElement("div");
-  spotSub.className = "text-[11px] text-slate-500 mt-0.5";
+  spotSub.className = "text-[11px] font-mono text-slate-400 mt-0.5";
   spotSub.textContent =
-    card.dexSwapOutNara && card.dexSwapOutNara > 0
-      ? `${card.naraDisplay} $NARA (${card.dexSwapOutNara.toFixed(2)} via swap)`
-      : `${card.naraDisplay} $NARA on DEX`;
+    card.spotInsideUsd && card.chestUsd && card.chestUsd >= 0.01
+      ? `~${formatUsdClean(card.spotInsideUsd)} principal + ~${formatUsdPrecise(card.chestUsd)} chest`
+      : `${card.naraDisplay} $NARA sealed principal`;
   spotBox.appendChild(spotLabel);
   spotBox.appendChild(spotVal);
   spotBox.appendChild(spotSub);
@@ -1919,9 +2295,9 @@ function renderCardHelpModal(allCards) {
   payTop.className = "flex items-center justify-between gap-1.5";
   const payLabel = document.createElement("span");
   payLabel.className = "text-xs font-semibold text-emerald-300";
-  payLabel.textContent = "You Pay";
+  payLabel.textContent = "Your Fixed Cost";
   payTop.appendChild(payLabel);
-  if (card.spotDiscountPct != null && card.spotDiscountPct >= 3) {
+  if (card.spotDiscountPct != null && card.spotDiscountPct >= 2) {
     const dPill = document.createElement("span");
     dPill.className =
       "px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[11px] font-bold";
@@ -1938,8 +2314,11 @@ function renderCardHelpModal(allCards) {
   payVal.className = "text-xl font-mono font-bold text-white mt-1";
   payVal.textContent = card.askUsdNum ? `~${formatUsdClean(card.askUsdNum)}` : card.ethPriceDisplay;
   const paySub = document.createElement("div");
-  paySub.className = "text-[11px] font-mono text-emerald-300/85 mt-0.5";
-  paySub.textContent = `${card.ethPriceDisplay} · 0% slippage`;
+  paySub.className = "text-[11px] font-mono text-emerald-300/90 mt-0.5";
+  paySub.textContent =
+    card.netSavingsUsd != null && card.netSavingsUsd >= 10
+      ? `${card.ethPriceDisplay} · save ~${formatUsdClean(card.netSavingsUsd)}`
+      : `${card.ethPriceDisplay} · 0% slippage`;
   payBox.appendChild(payTop);
   payBox.appendChild(payVal);
   payBox.appendChild(paySub);
@@ -1950,25 +2329,25 @@ function renderCardHelpModal(allCards) {
 
   // 2B. Clean Left-Label / Right-Value Financial Rows
   const monthly = formatMonthlyFlow(card.weightWei, card.alreadyOnGrid);
-  const pendingNaraWei =
-    card.unsettledEpochs > 0n && liveNaraPerEpochWei > 0n && liveActiveModelWeightWei > 0n
-      ? (card.unsettledEpochs * liveNaraPerEpochWei * card.weightWei) / liveActiveModelWeightWei
-      : 0n;
-  const totalLiveNaraWei = card.claimableNaraWei + pendingNaraWei;
+  const totalLiveNaraWei = card.chestNaraTotalWei ?? card.claimableNaraWei;
   const epochLabel = liveEngineClock ? `Epoch #${liveEngineClock.currentWallEpoch.toString()}` : "Base 8453";
 
-  let chestRightMain = "0.000 $NARA";
+  let chestRightMain = "$0.00";
   let chestRightSub = !card.isMintedOnChain
     ? "Starts on mint"
     : liveEngineClock && card.activationEpoch != null && liveEngineClock.currentWallEpoch < card.activationEpoch
       ? `Activates Epoch #${card.activationEpoch.toString()}`
-      : epochLabel;
-  if (totalLiveNaraWei > 0n || card.claimableEthWei > 0n || card.claimableUsdcUnits > 0n) {
-    chestRightMain = `+${formatDisplayNara(totalLiveNaraWei)} $NARA`;
-    const extras = [];
-    if (card.claimableEthWei > 0n) extras.push(`+${formatEthExact(card.claimableEthWei)} ETH`);
-    if (card.claimableUsdcUnits > 0n) extras.push(`+$${formatUsdcExact(card.claimableUsdcUnits)}`);
-    chestRightSub = extras.length > 0 ? extras.join(" · ") : `${epochLabel} · 100% yours`;
+      : `0.000 $NARA · ${epochLabel}`;
+  if (totalLiveNaraWei > 0n || card.claimableEthWei >= 100_000_000_000_000n || card.claimableUsdcUnits >= 10_000n) {
+    const tokenParts = [];
+    if (totalLiveNaraWei > 0n) tokenParts.push(`+${formatDisplayNara(totalLiveNaraWei)} $NARA`);
+    if (card.claimableEthWei >= 100_000_000_000_000n) tokenParts.push(`+${formatEthExact(card.claimableEthWei)} ETH`);
+    if (card.claimableUsdcUnits >= 10_000n) tokenParts.push(`+$${formatUsdcExact(card.claimableUsdcUnits)}`);
+    chestRightMain =
+      card.chestUsd != null && card.chestUsd > 0
+        ? `~${formatUsdPrecise(card.chestUsd)}`
+        : tokenParts[0];
+    chestRightSub = tokenParts.join(" · ");
   }
 
   const rowsWrap = document.createElement("div");
@@ -2008,24 +2387,39 @@ function renderCardHelpModal(allCards) {
   };
 
   addKvRow(
-    "Monthly Pulses",
-    "Paid every 15m · sell anytime",
-    monthly ? monthly.primary.replace(/^Est\.\s*/, "") : "Loading…",
-    monthly?.secondary || `${card.weightDisplay}x share`,
-    true
+    "Same ETH on DEX Swap",
+    "Live Uniswap v4 quote (incl. impact & hook fee)",
+    card.dexExceedsDepth
+      ? "Exceeds V4 depth"
+      : card.dexSwapOutNara != null
+        ? `~${card.dexSwapOutNara.toFixed(2)} $NARA`
+        : "0% AMM slippage",
+    card.dexExceedsDepth
+      ? `${card.naraDisplay} $NARA atomic via Vault`
+      : card.dexMultiple != null && card.dexMultiple >= 1.05
+        ? `${card.dexMultiple.toFixed(1)}× more $NARA via Vault`
+        : `Fixed ${card.ethPriceDisplay} settlement`,
+    !card.dexBeatsVault
   );
   addKvRow(
     "In Chest Now",
-    "Transfers 100% to buyer",
+    "100% transfers atomically to buyer",
     chestRightMain,
     chestRightSub,
-    totalLiveNaraWei > 0n
+    totalLiveNaraWei > 0n || card.claimableEthWei > 0n || card.claimableUsdcUnits > 0n
   );
   addKvRow(
-    "Exit Options",
-    "Or resell receipt anytime",
+    "Est. Monthly Pulses",
+    "Liquid every 15m · sell or slip anytime",
+    monthly ? monthly.primary.replace(/^Est\.\s*/, "") : hasLoadedTelemetry ? "0.000 $NARA / mo" : "Reading Base…",
+    monthly?.secondary ? `${monthly.secondary} · variable` : `${card.weightDisplay}x share · variable`,
+    Boolean(monthly)
+  );
+  addKvRow(
+    "Dual Exit Paths",
+    "Resell ERC-721 anytime (5% fee) or hold",
     `100% after ${card.durationDays}d`,
-    "0% maturity fee",
+    "0% exit fee at maturity",
     false
   );
 
@@ -2075,8 +2469,8 @@ function renderCardHelpModal(allCards) {
     return r;
   };
 
-  legend.appendChild(makeLegendRow("bg-emerald-400", "Base Pool Liquidity", `95% · ${treasuryEth} ETH`));
-  legend.appendChild(makeLegendRow("bg-sky-400", "Active Holders", `5% · ${holderEth} ETH`));
+  legend.appendChild(makeLegendRow("bg-emerald-400", "Treasury Safe (Base LP & Ops)", `95% · ${treasuryEth} ETH`));
+  legend.appendChild(makeLegendRow("bg-sky-400", "Active Holders (On-Chain)", `5% · ${holderEth} ETH`));
 
   splitWrap.appendChild(splitTitle);
   splitWrap.appendChild(barTrack);
@@ -2105,9 +2499,23 @@ export function toggleCardHelp(e, tokenIdStr) {
   playClickFn();
   const tokenIdNum = Number(tokenIdStr);
   if (!Number.isInteger(tokenIdNum) || tokenIdNum <= 0) return;
-  expandedHelpTokenId = expandedHelpTokenId === tokenIdNum ? null : tokenIdNum;
+  const opening = expandedHelpTokenId !== tokenIdNum;
+  if (opening && typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+    helpPrevFocus = document.activeElement;
+  }
+  expandedHelpTokenId = opening ? tokenIdNum : null;
   renderSeatsGrid();
   modalVisibilityChangeFn();
+  if (opening && typeof document !== "undefined") {
+    const closeEl = document.querySelector("[data-card-help-box] button");
+    if (closeEl && typeof closeEl.focus === "function") closeEl.focus();
+  } else if (typeof document !== "undefined") {
+    const target =
+      (helpPrevFocus && helpPrevFocus.isConnected ? helpPrevFocus : null) ||
+      document.querySelector(`[data-card-help-btn="${tokenIdNum}"]`);
+    if (target && typeof target.focus === "function") target.focus();
+    helpPrevFocus = null;
+  }
 }
 
 export function setAnchorTierFilter(_e, modeStr) {
@@ -2125,6 +2533,9 @@ export function selectAnchorSeat(e, tokenIdStr) {
   playClickFn();
   const tokenIdNum = Number(tokenIdStr);
   if (!Number.isInteger(tokenIdNum) || !liveOffersByTokenId.has(tokenIdNum)) return;
+  if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+    reviewPrevFocus = document.activeElement;
+  }
   selectedReviewTokenId = tokenIdNum;
   expandedHelpTokenId = null;
   if (currentSeatStatus.kind === "error" || currentSeatStatus.kind === "warn") {
@@ -2132,14 +2543,26 @@ export function selectAnchorSeat(e, tokenIdStr) {
   }
   renderSeatsGrid();
   renderReviewDrawer(true);
+  if (typeof document !== "undefined") {
+    const closeEl = document.querySelector("[data-seat-review-box] button");
+    if (closeEl && typeof closeEl.focus === "function") closeEl.focus();
+  }
 }
 
 export function cancelSeatReview(e) {
   if (e && typeof e.stopPropagation === "function") e.stopPropagation();
   if (isBuyingSeat) return;
   playClickFn();
+  const closedId = selectedReviewTokenId;
   selectedReviewTokenId = null;
   renderSeatsGrid();
+  if (typeof document !== "undefined") {
+    const target =
+      (reviewPrevFocus && reviewPrevFocus.isConnected ? reviewPrevFocus : null) ||
+      (closedId ? document.querySelector(`[data-seat-select-btn="${closedId}"]`) : null);
+    if (target && typeof target.focus === "function") target.focus();
+  }
+  reviewPrevFocus = null;
 }
 
 export function copySeatLink(e, tokenIdStr) {
@@ -2244,6 +2667,7 @@ export async function refreshAnchorSeats(showFeedback = false) {
     }
     if (rewardStateFull && pAcc && emCfg && emSt && eligRes !== null) {
       liveActiveModelWeightWei = pAcc.activeModelWeight;
+      liveActiveRewardWeightWei = pAcc.activeRewardWeight;
       liveNaraPerEpochWei = computeLiveNaraPerEpochWei({
         config: emCfg,
         emissionState: emSt,
@@ -2254,36 +2678,10 @@ export async function refreshAnchorSeats(showFeedback = false) {
         activeModelWeight: pAcc.activeModelWeight,
         activeRewardWeight: pAcc.activeRewardWeight,
       });
+      hasLoadedTelemetry = true;
     }
 
-    // Background-refresh real Uniswap V4 Hook execution quotes once per 60s ONLY when #anchorSeatsGrid is mounted (/vault)
     const hasGrid = typeof document !== "undefined" && Boolean(document.getElementById("anchorSeatsGrid"));
-    if (hasGrid && typeof window !== "undefined" && Date.now() - lastDexQuoteFetchMs > 60_000) {
-      lastDexQuoteFetchMs = Date.now();
-      Promise.all(
-        WAVE_1_TIERS.map(async (t) => {
-          try {
-            const res = await fetch(`/api/quote?direction=buy&asset=ETH&amount=${encodeURIComponent(t.askEth)}`);
-            if (!res.ok) return null;
-            const j = await res.json();
-            const out = Number(j?.expectedOut);
-            return Number.isFinite(out) && out > 0 ? [t.askEth, out] : null;
-          } catch {
-            return null;
-          }
-        })
-      ).then((entries) => {
-        let updated = false;
-        for (const pair of entries) {
-          if (pair) {
-            liveDexOutNaraByEth.set(pair[0], pair[1]);
-            updated = true;
-          }
-        }
-        if (updated) renderSeatsGrid();
-      });
-    }
-
     const mintedCount = Number(BigInt(headRes[0].returnData));
     const currentSafeSellerNonce =
       headRes[1].success && headRes[1].returnData.length >= 66 ? BigInt(headRes[1].returnData) : 0n;
@@ -2291,37 +2689,50 @@ export async function refreshAnchorSeats(showFeedback = false) {
       headRes[2].success && headRes[2].returnData.length >= 66 ? BigInt(headRes[2].returnData) !== 0n : false;
     const nextCheckpoint = rewardStateFull ? rewardStateFull.nextCheckpoint : 0n;
 
-    const maxScan = Math.min(mintedCount, 256);
-    if (maxScan <= 0) {
+    // On / (no grid mounted), scan strictly the Wave 1 range (#16..#44) for lightweight badge/preview updates;
+    // on /vault, chunk scan up to 1,024 receipts (80/batch) so Wave 2+ seats remain visible cleanly.
+    const scanStart = hasGrid ? 1 : ANCHOR_SEAT_CONSTANTS.cohort1FirstTokenId;
+    const maxScan = hasGrid
+      ? Math.min(mintedCount, 1024)
+      : Math.min(mintedCount, ANCHOR_SEAT_CONSTANTS.cohort1LastTokenId);
+    if (maxScan < scanStart) {
       renderSeatsGrid();
       return;
     }
 
-    const scanCalls = [];
-    for (let tid = 1; tid <= maxScan; tid++) {
-      scanCalls.push({
-        target: ANCHOR_SEAT_CONSTANTS.positionSale,
-        allowFailure: true,
-        callData: encodeListingCall(tid),
-      });
-      scanCalls.push({
-        target: ANCHOR_SEAT_CONSTANTS.positionReceipt,
-        allowFailure: true,
-        callData: encodeOwnerOfCall(tid),
-      });
-      scanCalls.push({
-        target: ANCHOR_SEAT_CONSTANTS.positionReceipt,
-        allowFailure: true,
-        callData: encodeGetApprovedCall(tid),
-      });
-      scanCalls.push({
-        target: ANCHOR_SEAT_CONSTANTS.positionReceipt,
-        allowFailure: true,
-        callData: encodeReceiptTransferNonceCall(tid),
-      });
+    const tokenIds = [];
+    for (let tid = scanStart; tid <= maxScan; tid++) tokenIds.push(tid);
+    const SCAN_CHUNK = 80;
+    const scanRes = [];
+    for (let offset = 0; offset < tokenIds.length; offset += SCAN_CHUNK) {
+      const slice = tokenIds.slice(offset, offset + SCAN_CHUNK);
+      const chunkCalls = [];
+      for (const tid of slice) {
+        chunkCalls.push({
+          target: ANCHOR_SEAT_CONSTANTS.positionSale,
+          allowFailure: true,
+          callData: encodeListingCall(tid),
+        });
+        chunkCalls.push({
+          target: ANCHOR_SEAT_CONSTANTS.positionReceipt,
+          allowFailure: true,
+          callData: encodeOwnerOfCall(tid),
+        });
+        chunkCalls.push({
+          target: ANCHOR_SEAT_CONSTANTS.positionReceipt,
+          allowFailure: true,
+          callData: encodeGetApprovedCall(tid),
+        });
+        chunkCalls.push({
+          target: ANCHOR_SEAT_CONSTANTS.positionReceipt,
+          allowFailure: true,
+          callData: encodeReceiptTransferNonceCall(tid),
+        });
+      }
+      const chunkOut = await multicallRead(chunkCalls);
+      scanRes.push(...chunkOut);
     }
 
-    const scanRes = await multicallRead(scanCalls);
     const nowSec = BigInt(Math.floor(Date.now() / 1000));
     const candidates = [];
     const bakingTokenIds = [];
@@ -2329,8 +2740,9 @@ export async function refreshAnchorSeats(showFeedback = false) {
     const soldCandidateIds = [];
     const nextStrangerSet = new Set();
 
-    for (let tid = 1; tid <= maxScan; tid++) {
-      const baseIdx = (tid - 1) * 4;
+    for (let idx = 0; idx < tokenIds.length; idx++) {
+      const tid = tokenIds[idx];
+      const baseIdx = idx * 4;
       const listR = scanRes[baseIdx];
       const ownerR = scanRes[baseIdx + 1];
       const apprR = scanRes[baseIdx + 2];
@@ -2357,6 +2769,7 @@ export async function refreshAnchorSeats(showFeedback = false) {
         offer.listingId !== 0n &&
         offer.seller.toLowerCase() === safeLower &&
         offer.sellerNonce === currentSafeSellerNonce &&
+        offer.transferNonce === tNonce &&
         offer.expiry > nowSec &&
         ownerAddr.toLowerCase() === safeLower &&
         isApproved;
@@ -2527,6 +2940,79 @@ export async function refreshAnchorSeats(showFeedback = false) {
     soldCohortTokenIds = nextSoldSet;
     strangerMintedTokenIds = nextStrangerSet;
 
+    // Background-refresh real Uniswap V4 Hook quotes keyed by actual live priceWei (with 422 exceeds_depth capture + client RPC fallback)
+    const needsDexComparison =
+      hasGrid || (typeof document !== "undefined" && Boolean(document.getElementById("homePillarDexTag")));
+    if (needsDexComparison && typeof window !== "undefined" && Date.now() - lastDexQuoteFetchMs > 60_000) {
+      const uniquePriceMap = new Map();
+      if (hasGrid) {
+        for (const off of nextLiveMap.values()) {
+          uniquePriceMap.set(off.priceWei.toString(), formatUnits(off.priceWei, 18));
+        }
+        for (const t of WAVE_1_TIERS) {
+          const w = parseDecimalToWei18(t.askEth);
+          if (!uniquePriceMap.has(w.toString())) uniquePriceMap.set(w.toString(), t.askEth);
+        }
+      } else {
+        // Home page only needs a single benchmark quote (top open tier) to avoid unnecessary public RPC fan-out
+        let maxPriceWei = 0n;
+        for (const off of nextLiveMap.values()) {
+          if (off.priceWei > maxPriceWei) maxPriceWei = off.priceWei;
+        }
+        const benchWei = maxPriceWei > 0n ? maxPriceWei : parseDecimalToWei18(WAVE_1_TIERS[WAVE_1_TIERS.length - 1].askEth);
+        uniquePriceMap.set(benchWei.toString(), formatUnits(benchWei, 18));
+      }
+      const rpcEthCall = (to, data) => publicBaseRpcRequest("eth_call", [{ to, data }, "latest"]);
+      Promise.all(
+        [...uniquePriceMap.entries()].map(async ([priceWeiKey, ethAmountStr]) => {
+          try {
+            const res = await fetch(`/api/quote?direction=buy&asset=ETH&amount=${encodeURIComponent(ethAmountStr)}`);
+            if (res.status === 422) {
+              return [priceWeiKey, { status: "exceeds_depth" }];
+            }
+            if (res.ok) {
+              const j = await res.json();
+              const out = Number(j?.expectedOut);
+              if (Number.isFinite(out) && out > 0) return [priceWeiKey, { status: "ok", outNara: out }];
+            }
+          } catch {
+            // Fall through to client-side direct Base RPC Quoter fallback
+          }
+          try {
+            const direct = await quoteLiveV4Swap({
+              direction: "buy",
+              asset: "ETH",
+              amountStr: ethAmountStr,
+              slippageBps: 500,
+              ethCall: rpcEthCall,
+            });
+            const out = Number(direct?.expectedOut);
+            if (Number.isFinite(out) && out > 0) return [priceWeiKey, { status: "ok", outNara: out }];
+          } catch (err) {
+            const msg = String(err?.message || "");
+            const dataHex = String(err?.data?.data || err?.data || "");
+            if (err?.code === 3 || /^0x[0-9a-fA-F]{8,}/.test(dataHex) || /revert|liquidity|overflow|tick/i.test(msg)) {
+              return [priceWeiKey, { status: "exceeds_depth" }];
+            }
+          }
+          return null;
+        })
+      ).then((entries) => {
+        let updated = false;
+        for (const pair of entries) {
+          if (pair) {
+            liveDexQuoteByPriceWei.set(pair[0], pair[1]);
+            updated = true;
+          }
+        }
+        if (updated) {
+          lastDexQuoteFetchMs = Date.now();
+          if (hasGrid) renderSeatsGrid();
+          else updateHeaderBadge();
+        }
+      });
+    }
+
     // Auto-open ?seat=<id> deep-link when arriving inside a mobile wallet browser
     if (pendingAutoSelectSeatId != null && nextLiveMap.size > 0) {
       const requestedId = pendingAutoSelectSeatId;
@@ -2584,9 +3070,13 @@ async function ensureWalletOnBase(provider) {
           },
         ],
       });
-      return;
+    } else {
+      throw err;
     }
-    throw err;
+  }
+  const verifyHex = await provider.request({ method: "eth_chainId" });
+  if (parseInt(String(verifyHex), 16) !== ANCHOR_SEAT_CONSTANTS.chainId) {
+    throw new Error("Wallet did not switch to Base Mainnet (Chain ID 8453). Switch networks and retry.");
   }
 }
 
@@ -2609,9 +3099,12 @@ async function readChainTimestampSec(provider) {
 async function waitForTxReceipt(provider, txHash, timeoutMs = 90000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const receipt = await provider
+    let receipt = await provider
       .request({ method: "eth_getTransactionReceipt", params: [txHash] })
-      .catch(() => baseRpcRequest("eth_getTransactionReceipt", [txHash]).catch(() => null));
+      .catch(() => null);
+    if (!receipt) {
+      receipt = await publicBaseRpcRequest("eth_getTransactionReceipt", [txHash]).catch(() => null);
+    }
     if (receipt && receipt.status != null) {
       if (receipt.status === "0x1" || receipt.status === 1 || receipt.status === "1") return receipt;
       throw new Error("Seat purchase transaction reverted on Base.");
@@ -2694,8 +3187,12 @@ export async function buyAnchorSeat(_e, rawArg) {
         { target: ANCHOR_SEAT_CONSTANTS.rewardLens, allowFailure: true, callData: encodeRewardCreditCall(ANCHOR_SEAT_CONSTANTS.rewardLedger, guessPosId, guessGen, 2) },
       ]),
       multicallRead(
-        [{ target: ANCHOR_SEAT_CONSTANTS.positionSale, allowFailure: true, callData: encodeListingCall(tokenIdNum) }],
-        true
+        [
+          { target: ANCHOR_SEAT_CONSTANTS.positionSale, allowFailure: true, callData: encodeListingCall(tokenIdNum) },
+          { target: ANCHOR_SEAT_CONSTANTS.principalLedger, allowFailure: true, callData: encodePositionHeadCall(guessPosId) },
+        ],
+        true,
+        { skipPrimaryPublic: true }
       ).catch(() => []),
       readChainTimestampSec(provider),
     ]);
@@ -2707,6 +3204,7 @@ export async function buyAnchorSeat(_e, rawArg) {
     }
 
     const quorumOffer = quorumRes[0]?.success ? decodeListingResult(quorumRes[0].returnData) : null;
+    const quorumPos = quorumRes[1]?.success ? decodePositionHeadResult(quorumRes[1].returnData) : null;
     const ownerAddr =
       preSignRes[1]?.success && preSignRes[1].returnData.length >= 66
         ? "0x" + strip0x(preSignRes[1].returnData).slice(24)
@@ -2752,6 +3250,8 @@ export async function buyAnchorSeat(_e, rawArg) {
       expectedPriceWei,
       freshOffer,
       quorumOffer,
+      quorumPos: freshOffer.positionId === guessPosId ? quorumPos : null,
+      requireQuorum: true,
       ownerAddr,
       receiptTransferNonce,
       currentSafeSellerNonce,
@@ -2799,6 +3299,17 @@ export async function buyAnchorSeat(_e, rawArg) {
       data: txReqWithAttribution.data,
       value: txReqWithAttribution.value,
     });
+
+    // Final pre-sign signer & chain invariant check immediately before prompting wallet
+    const liveAccounts = await provider.request({ method: "eth_accounts" }).catch(() => []);
+    const activeNow = Array.isArray(liveAccounts) && liveAccounts[0] ? String(liveAccounts[0]).toLowerCase() : "";
+    const liveChainHex = await provider.request({ method: "eth_chainId" }).catch(() => "");
+    if (activeNow && activeNow !== buyer.toLowerCase()) {
+      throw new Error("Connected wallet account changed during checkout. Review again before signing.");
+    }
+    if (parseInt(String(liveChainHex), 16) !== ANCHOR_SEAT_CONSTANTS.chainId) {
+      throw new Error("Wallet network changed off Base (8453). Switch back to Base and retry.");
+    }
 
     setSeatStatus(
       "info",
@@ -2966,21 +3477,39 @@ export function initAnchorSeats({ bindActions, playClick, playSuccess, onModalVi
     });
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
+      // Close strictly the topmost open Vault layer per Escape press
       if (expandedHelpTokenId !== null) {
+        const closedId = expandedHelpTokenId;
         expandedHelpTokenId = null;
         renderSeatsGrid();
         modalVisibilityChangeFn();
+        const target =
+          (helpPrevFocus && helpPrevFocus.isConnected ? helpPrevFocus : null) ||
+          document.querySelector(`[data-card-help-btn="${closedId}"]`);
+        if (target && typeof target.focus === "function") target.focus();
+        helpPrevFocus = null;
+        return;
       }
       if (selectedReviewTokenId !== null && !isBuyingSeat) {
+        const closedId = selectedReviewTokenId;
         selectedReviewTokenId = null;
         renderSeatsGrid();
         modalVisibilityChangeFn();
+        const target =
+          (reviewPrevFocus && reviewPrevFocus.isConnected ? reviewPrevFocus : null) ||
+          document.querySelector(`[data-seat-select-btn="${closedId}"]`);
+        if (target && typeof target.focus === "function") target.focus();
+        reviewPrevFocus = null;
+        return;
       }
       const specsDrawer = document.getElementById("anchorSpecsDrawer");
       if (specsDrawer && !specsDrawer.classList.contains("hidden")) {
         specsDrawer.classList.add("hidden");
         const specsBtn = document.getElementById("toggleAnchorSpecsBtn");
-        if (specsBtn) specsBtn.setAttribute("aria-expanded", "false");
+        if (specsBtn) {
+          specsBtn.setAttribute("aria-expanded", "false");
+          specsBtn.focus();
+        }
       }
     });
   }
@@ -2996,24 +3525,34 @@ export function initAnchorSeats({ bindActions, playClick, playSuccess, onModalVi
   if (hasGrid) {
     countdownTimer = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
+      const nowSec = BigInt(Math.floor(Date.now() / 1000));
+      let anyExpired = false;
+      for (const [tid, off] of liveOffersByTokenId.entries()) {
+        if (off.expiry <= nowSec) {
+          liveOffersByTokenId.delete(tid);
+          expiredReceiptsByTokenId.set(tid, off);
+          if (selectedReviewTokenId === tid) selectedReviewTokenId = null;
+          anyExpired = true;
+        }
+      }
+      if (anyExpired) {
+        renderSeatsGrid();
+        return;
+      }
       if (selectedReviewTokenId != null) {
         const selOffer = liveOffersByTokenId.get(selectedReviewTokenId);
-        const nowSec = BigInt(Math.floor(Date.now() / 1000));
-        if (!selOffer || selOffer.expiry <= nowSec) {
-          liveOffersByTokenId.delete(selectedReviewTokenId);
-          selectedReviewTokenId = null;
-          renderSeatsGrid();
-          return;
-        }
-        // Update ONLY the expiry text node in place — NEVER recreate button DOM under mobile touch taps!
         const expEl = typeof document !== "undefined" ? document.getElementById("anchorReviewExpiryText") : null;
-        if (expEl) expEl.textContent = formatExpiryShort(selOffer.expiry);
+        if (selOffer && expEl) expEl.textContent = formatExpiryShort(selOffer.expiry);
       }
       updateHeaderBadge();
     }, 1000);
   }
 
-  setInterval(() => {
+  if (refreshPollTimer) {
+    clearInterval(refreshPollTimer);
+    refreshPollTimer = null;
+  }
+  refreshPollTimer = setInterval(() => {
     if (typeof document !== "undefined" && document.hidden) return;
     refreshAnchorSeats(false);
   }, hasGrid ? 25000 : 120000);

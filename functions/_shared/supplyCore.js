@@ -133,6 +133,7 @@ export function computeOrderNaraWei(liquidity, tickLower, tickUpper, sqrtPriceX9
 }
 
 const COMMON_SECURITY_HEADERS = {
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "no-referrer",
@@ -180,22 +181,44 @@ export function optionsResponse() {
 }
 
 /**
- * Coalesces GET responses through Cloudflare's regional PoP edge cache (`caches.default`)
- * while remaining a transparent no-op in Node.js unit tests where `globalThis.caches` is absent.
+ * Canonicalizes a request URL into a strict edge-cache key carrying ONLY allowlisted
+ * query parameters in sorted order so arbitrary `?cb=` query strings cannot bypass caches.
  */
-export async function withEdgeCache(ctx, fallbackUrl, compute) {
+export function buildCanonicalCacheUrl(rawUrl, allowedParams = []) {
+  const parsed = new URL(rawUrl);
+  const clean = new URL(parsed.pathname, parsed.origin);
+  const sorted = [...new Set(allowedParams)].sort();
+  for (const key of sorted) {
+    const val = parsed.searchParams.get(key);
+    if (val !== null && val !== "") {
+      clean.searchParams.set(key, val);
+    }
+  }
+  return clean.toString();
+}
+
+/**
+ * Coalesces GET & HEAD responses through Cloudflare's regional PoP edge cache (`caches.default`)
+ * using canonicalized cache keys, while remaining a transparent no-op in Node.js unit tests.
+ */
+export async function withEdgeCache(ctx, fallbackUrl, compute, allowedParams = []) {
   const edgeCache =
     typeof caches !== "undefined" && caches?.default ? caches.default : null;
   const reqMethod = ctx?.request?.method ? String(ctx.request.method).toUpperCase() : "GET";
-  if (!edgeCache || reqMethod !== "GET") {
+  if (!edgeCache || (reqMethod !== "GET" && reqMethod !== "HEAD")) {
     return compute();
   }
 
   const rawUrl = ctx?.request?.url || fallbackUrl;
-  const cacheKey = new Request(rawUrl, { method: "GET" });
+  const canonicalUrl = buildCanonicalCacheUrl(rawUrl, allowedParams);
+  const cacheKey = new Request(canonicalUrl, { method: "GET" });
   try {
     const hit = await edgeCache.match(cacheKey);
-    if (hit) return hit;
+    if (hit) {
+      return reqMethod === "HEAD"
+        ? new Response(null, { status: hit.status, headers: hit.headers })
+        : hit;
+    }
   } catch {
     // Proceed to origin compute if cache lookup fails
   }
@@ -210,7 +233,9 @@ export async function withEdgeCache(ctx, fallbackUrl, compute) {
       await putPromise;
     }
   }
-  return res;
+  return reqMethod === "HEAD"
+    ? new Response(null, { status: res.status, headers: res.headers })
+    : res;
 }
 
 function padWordHex(hexNoPrefix) {

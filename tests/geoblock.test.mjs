@@ -32,13 +32,17 @@ test("blocks comprehensively embargoed countries (CU, IR, KP, SY) with HTTP 451"
   }
 });
 
-test("blocks covered UA regions (43, 40, 14, 09) while allowing non-embargoed UA regions", () => {
-  for (const region of ["43", "40", "14", "09"]) {
+test("blocks covered UA regions (43, 40, 14, 09, 23, 65) while allowing non-embargoed UA regions and ignoring spoofed headers when request.cf is present", () => {
+  for (const region of ["43", "40", "14", "09", "23", "65"]) {
     const req = new Request("https://naraprotocol.io/", {
       headers: { "CF-IPCountry": "UA", "X-CF-Region-Code": region },
     });
-    assert.equal(detectSanctionedJurisdiction(req).blocked, true);
-    assert.equal(enforceSanctionsGuard(req)?.status, 451);
+    assert.equal(detectSanctionedJurisdiction(req).blocked, true, `region ${region} must be blocked`);
+    const res = enforceSanctionsGuard(req);
+    assert.equal(res?.status, 451);
+    assert.match(res.headers.get("Strict-Transport-Security") || "", /max-age=/);
+    assert.equal(res.headers.get("X-Frame-Options"), "DENY");
+    assert.ok(res.headers.get("Content-Security-Policy"));
   }
 
   const kyivReq = new Request("https://naraprotocol.io/", {
@@ -46,6 +50,19 @@ test("blocks covered UA regions (43, 40, 14, 09) while allowing non-embargoed UA
   });
   assert.equal(detectSanctionedJurisdiction(kyivReq).blocked, false);
   assert.equal(enforceSanctionsGuard(kyivReq), null);
+
+  // When Cloudflare populates request.cf, spoofed client X-CF-Region-Code headers are ignored
+  const spoofedKyiv = new Request("https://naraprotocol.io/", {
+    headers: { "CF-IPCountry": "UA", "X-CF-Region-Code": "43" },
+  });
+  Object.defineProperty(spoofedKyiv, "cf", { value: { country: "UA", regionCode: "30" } });
+  assert.equal(detectSanctionedJurisdiction(spoofedKyiv).blocked, false);
+
+  const spoofedBypass = new Request("https://naraprotocol.io/", {
+    headers: { "CF-IPCountry": "UA", "X-CF-Region-Code": "30" },
+  });
+  Object.defineProperty(spoofedBypass, "cf", { value: { country: "UA", regionCode: "23" } });
+  assert.equal(detectSanctionedJurisdiction(spoofedBypass).blocked, true);
 });
 
 test("keeps legal notices, WebAuthn ROR, and read-only supply APIs exempt from 451", async () => {

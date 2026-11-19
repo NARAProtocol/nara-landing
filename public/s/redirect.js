@@ -12,7 +12,18 @@ function runRedirect() {
   const dest = Object.prototype.hasOwnProperty.call(SAFE_TARGETS, raw)
     ? SAFE_TARGETS[raw]
     : "/";
-  window.location.replace(dest);
+  let querySuffix = "";
+  if (dest === "/vault" || dest === "/") {
+    const incoming = new URLSearchParams(window.location.search);
+    const safeOut = new URLSearchParams();
+    const seat = incoming.get("seat");
+    if (seat && /^\d{1,6}$/.test(seat)) safeOut.set("seat", seat);
+    const buy = incoming.get("buy");
+    if (buy === "1") safeOut.set("buy", "1");
+    const qs = safeOut.toString();
+    if (qs) querySuffix = "?" + qs;
+  }
+  window.location.replace(dest + querySuffix);
 }
 
 if (document.body) {

@@ -1,5 +1,5 @@
 export const SANCTIONED_COUNTRIES = Object.freeze(new Set(["CU", "IR", "KP", "SY"]));
-export const SANCTIONED_UA_REGIONS = Object.freeze(new Set(["43", "40", "14", "09"]));
+export const SANCTIONED_UA_REGIONS = Object.freeze(new Set(["43", "40", "14", "09", "23", "65"]));
 
 const EXEMPT_EXACT_PATHS = new Set([
   "/privacy",
@@ -31,13 +31,17 @@ export function isSanctionedExemptPath(pathname) {
 }
 
 export function detectSanctionedJurisdiction(request) {
-  const cf = request?.cf || {};
+  const hasCfObject = Boolean(request && typeof request.cf === "object" && request.cf !== null);
+  const cf = hasCfObject ? request.cf : {};
   const country = String(cf.country || request?.headers?.get("CF-IPCountry") || "")
     .trim()
     .toUpperCase();
-  const regionCode = String(cf.regionCode || request?.headers?.get("X-CF-Region-Code") || "")
-    .trim()
-    .toUpperCase();
+  // In Cloudflare runtime `request.cf` is populated by the edge; never trust client-supplied
+  // X-CF-Region-Code headers when `request.cf` is present (keep header fallback for unit tests only).
+  const rawRegion = hasCfObject
+    ? cf.regionCode || ""
+    : request?.headers?.get("X-CF-Region-Code") || "";
+  const regionCode = String(rawRegion).trim().toUpperCase();
 
   if (SANCTIONED_COUNTRIES.has(country)) {
     return { blocked: true, country, regionCode: regionCode || null };
@@ -60,7 +64,9 @@ export function enforceSanctionsGuard(request) {
 
   const baseHeaders = {
     "Cache-Control": "no-store",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
     "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
   };
 
@@ -79,6 +85,7 @@ export function enforceSanctionsGuard(request) {
         statusText: "Unavailable For Legal Reasons",
         headers: {
           ...baseHeaders,
+          "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
           "Content-Type": "application/json; charset=utf-8",
         },
       },
@@ -116,6 +123,7 @@ export function enforceSanctionsGuard(request) {
     statusText: "Unavailable For Legal Reasons",
     headers: {
       ...baseHeaders,
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
       "Content-Type": "text/html; charset=utf-8",
     },
   });

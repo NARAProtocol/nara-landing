@@ -214,7 +214,7 @@ export async function trySendCallsWithErc8021({
   const formattedCalls = calls.map((c) => ({
     to: c.to,
     value: c.value || "0x0",
-    data: appendErc8021DataSuffix(c.data || "0x", codesInput),
+    data: c.data || "0x",
   }));
   const capabilities = {
     dataSuffix: {
@@ -240,6 +240,10 @@ export async function trySendCallsWithErc8021({
     });
   } catch (errV2) {
     if (isUserRejectionError(errV2)) throw errV2;
+    // Never downgrade multi-call batches to non-atomic v1.0; fall back cleanly to sequential flow instead
+    if (calls.length > 1) {
+      return { usedSendCalls: false, txHash: null };
+    }
     try {
       rawResult = await provider.request({
         method: "wallet_sendCalls",
@@ -261,7 +265,7 @@ export async function trySendCallsWithErc8021({
 
   const batchId = typeof rawResult === "string" ? rawResult : rawResult?.id;
   if (typeof batchId !== "string" || !batchId.trim()) {
-    return { usedSendCalls: false, txHash: null };
+    throw new Error("Wallet submitted batch without returning a tracking ID. Check wallet activity before retrying.");
   }
 
   if (typeof onSubmitted === "function") {

@@ -35,7 +35,7 @@ export async function onRequestGet(ctx) {
         ? jsonResponse({ error: "upstream_rpc_unavailable" }, 503)
         : textResponse("upstream_rpc_unavailable", 503);
     }
-  });
+  }, ["mode", "format"]);
 }
 
 export async function onRequestHead(ctx) {

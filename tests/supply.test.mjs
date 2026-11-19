@@ -10,6 +10,8 @@ import {
   getSqrtPriceX96AtTick,
   computeOrderNaraWei,
   readSupplySnapshot,
+  buildCanonicalCacheUrl,
+  withEdgeCache,
 } from "../functions/_shared/supplyCore.js";
 import {
   onRequest as onCirculatingRequest,
@@ -379,5 +381,92 @@ test("HTTP endpoints return CoinGecko-compatible plain text, JSON breakdown, RPC
     assert.equal(errRes.headers.get("Cache-Control"), "no-store");
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("buildCanonicalCacheUrl strips arbitrary cache-busting query params and withEdgeCache serves HEAD from GET cache", async () => {
+  assert.equal(
+    buildCanonicalCacheUrl("https://naraprotocol.io/api/circulating-supply?cb=123&mode=protocol-only&foo=bar", ["mode", "format"]),
+    "https://naraprotocol.io/api/circulating-supply?mode=protocol-only"
+  );
+  assert.equal(
+    buildCanonicalCacheUrl("https://naraprotocol.io/api/supply?random=999", []),
+    "https://naraprotocol.io/api/supply"
+  );
+
+  // Mock caches.default to verify canonical cache hit + HEAD reuse
+  const store = new Map();
+  const origCaches = globalThis.caches;
+  globalThis.caches = {
+    default: {
+      async match(req) {
+        const hit = store.get(req.url);
+        return hit ? hit.clone() : undefined;
+      },
+      async put(req, res) {
+        store.set(req.url, res.clone());
+      },
+    },
+  };
+  let computeCount = 0;
+  try {
+    const ctx1 = {
+      request: new Request("https://naraprotocol.io/api/circulating-supply?cb=aaa&mode=default"),
+      waitUntil: (p) => p,
+    };
+    const r1 = await withEdgeCache(
+      ctx1,
+      "https://naraprotocol.io/api/circulating-supply",
+      async () => {
+        computeCount++;
+        return new Response("55.47", {
+          status: 200,
+          headers: { "Content-Type": "text/plain", "Cache-Control": "public, s-maxage=10" },
+        });
+      },
+      ["mode"]
+    );
+    assert.equal(r1.status, 200);
+    assert.equal(computeCount, 1);
+
+    // Different cache-buster param must HIT the exact same canonical cache entry
+    const ctx2 = {
+      request: new Request("https://naraprotocol.io/api/circulating-supply?cb=bbb&mode=default"),
+      waitUntil: (p) => p,
+    };
+    const r2 = await withEdgeCache(
+      ctx2,
+      "https://naraprotocol.io/api/circulating-supply",
+      async () => {
+        computeCount++;
+        return new Response("99.99", {
+          status: 200,
+          headers: { "Cache-Control": "public, s-maxage=10" },
+        });
+      },
+      ["mode"]
+    );
+    assert.equal(await r2.text(), "55.47");
+    assert.equal(computeCount, 1);
+
+    // HEAD request must ALSO hit the cached GET entry with zero compute & empty body
+    const ctxHead = {
+      request: new Request("https://naraprotocol.io/api/circulating-supply?mode=default", { method: "HEAD" }),
+      waitUntil: (p) => p,
+    };
+    const rHead = await withEdgeCache(
+      ctxHead,
+      "https://naraprotocol.io/api/circulating-supply",
+      async () => {
+        computeCount++;
+        return new Response("99.99", { status: 200 });
+      },
+      ["mode"]
+    );
+    assert.equal(rHead.status, 200);
+    assert.equal(await rHead.text(), "");
+    assert.equal(computeCount, 1);
+  } finally {
+    globalThis.caches = origCaches;
   }
 });

@@ -31,6 +31,7 @@ import {
   computeV4QuadraticWeightWei,
   classifyWave1Tier,
   buildMobileSeatWalletLinks,
+  computeReceiptValueBreakdown,
   verifyAndBuildSeatBounds,
   simulateSeatPurchaseFailClosed,
 } from "../src/meme/anchorSeats.js";
@@ -315,6 +316,13 @@ test("verifyAndBuildSeatBounds binds 3-asset credits + checkpoint and rejects se
       listingId: 3n,
       seller: ANCHOR_SEAT_CONSTANTS.treasurySafe,
       price: 2_000_000_000_000_000_000n,
+      expiry: 1796925600n,
+    },
+    quorumPos: {
+      generationOwner: ANCHOR_SEAT_CONSTANTS.treasurySafe,
+      principal: 1_000_000_000_000_000_000n,
+      withdrawn: false,
+      termsHash: terms,
     },
     ownerAddr: ANCHOR_SEAT_CONSTANTS.treasurySafe,
     receiptTransferNonce: 0n,
@@ -379,6 +387,7 @@ test("verifyAndBuildSeatBounds binds 3-asset credits + checkpoint and rejects se
   const nearExpiryBounds = verifyAndBuildSeatBounds({
     ...validInput,
     freshOffer: { ...validInput.freshOffer, expiry: 1794800300n + 300n },
+    quorumOffer: { ...validInput.quorumOffer, expiry: 1794800300n + 300n },
   });
   assert.equal(nearExpiryBounds.deadline, 1794800300n + 300n);
 
@@ -387,9 +396,81 @@ test("verifyAndBuildSeatBounds binds 3-asset credits + checkpoint and rejects se
       verifyAndBuildSeatBounds({
         ...validInput,
         freshOffer: { ...validInput.freshOffer, expiry: 1794800300n + 15n },
+        quorumOffer: { ...validInput.quorumOffer, expiry: 1794800300n + 15n },
       }),
     /under 30 seconds/
   );
+
+  // Fails closed when requireQuorum is true and secondary RPC quorumOffer is absent
+  assert.throws(
+    () =>
+      verifyAndBuildSeatBounds({
+        ...validInput,
+        quorumOffer: null,
+        requireQuorum: true,
+      }),
+    /Independent secondary Base RPC verification failed/
+  );
+
+  // Rejects secondary RPC expiry or principal mismatch
+  assert.throws(
+    () =>
+      verifyAndBuildSeatBounds({
+        ...validInput,
+        quorumOffer: { ...validInput.quorumOffer, expiry: 1796999999n },
+      }),
+    /Cross-RPC verification mismatch/
+  );
+  assert.throws(
+    () =>
+      verifyAndBuildSeatBounds({
+        ...validInput,
+        quorumPos: { ...validInput.quorumPos, principal: 500_000_000_000_000_000n },
+      }),
+    /Cross-RPC principal verification mismatch/
+  );
+});
+
+test("computeReceiptValueBreakdown computes exact Chest USD, Total Value Included, savings, and DEX depth status", () => {
+  const val = computeReceiptValueBreakdown({
+    principalWei: 5_000_000_000_000_000_000n, // 5.0 NARA
+    priceWei: 5_900_000_000_000_000_000n, // 5.90 ETH
+    claimableNaraWei: 25_000_000_000_000_000n, // 0.025 NARA
+    pendingNaraWei: 15_000_000_000_000_000n, // 0.015 NARA -> 0.04 NARA total
+    claimableEthWei: 50_000_000_000_000_000n, // 0.05 ETH
+    claimableUsdcUnits: 12_500_000n, // $12.50 USDC
+    spotUsdPerNara: 3200,
+    ethUsd: 2500,
+    dexQuote: { status: "exceeds_depth" },
+  });
+  // Principal spot = 5 * 3200 = $16,000
+  // Chest USD = (0.04 * 3200 = $128) + (0.05 * 2500 = $125) + $12.50 = $265.50
+  // Total included = $16,265.50; Ask = 5.90 * 2500 = $14,750; Net savings = $1,515.50
+  assert.equal(val.principalSpotUsd, 16000);
+  assert.equal(val.chestUsd, 265.5);
+  assert.equal(val.totalIncludedUsd, 16265.5);
+  assert.equal(val.askUsd, 14750);
+  assert.equal(val.netSavingsUsd, 1515.5);
+  assert.equal(val.totalDiscountPct, 9);
+  assert.equal(val.dexExceedsDepth, true);
+  assert.equal(val.dexBeatsVault, false);
+
+  const withDex = computeReceiptValueBreakdown({
+    principalWei: 1_000_000_000_000_000_000n,
+    priceWei: 1_610_000_000_000_000_000n,
+    claimableNaraWei: 0n,
+    pendingNaraWei: 0n,
+    claimableEthWei: 0n,
+    claimableUsdcUnits: 0n,
+    spotUsdPerNara: 3200,
+    ethUsd: 2500,
+    dexQuote: { status: "ok", outNara: 0.4 },
+  });
+  assert.equal(withDex.dexExceedsDepth, false);
+  assert.equal(withDex.dexOutNara, 0.4);
+  assert.equal(withDex.dexMultiple, 2.5);
+  assert.equal(withDex.dexSavingsPct, 60);
+  assert.equal(withDex.dexBeatsVault, false);
 });
 
 test("simulateSeatPurchaseFailClosed blocks custom hex reverts AND blocks total RPC simulation failure", async () => {

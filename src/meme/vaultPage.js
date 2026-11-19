@@ -1,6 +1,6 @@
 // Dedicated lightweight controller for /vault (Wave 1 Vault Receipts & Spot Terminal).
-// Zero arcade physics or local sticker collection overhead; shares the exact verified
-// NARAPositionSaleV5 BuyerBounds + Uniswap v4 Hook modules with the home page.
+// Zero arcade physics, zero unsolicited audio, and zero sticker overhead; shares the exact
+// verified NARAPositionSaleV5 BuyerBounds + Uniswap v4 Hook modules with the home page.
 
 import {
   NARA_CONTRACT,
@@ -45,68 +45,16 @@ import {
   getAnchorShowcaseSummary,
 } from "./anchorSeats.js";
 
-let audioCtx = null;
 let isWalletRequestPending = false;
+let copyCaTimer = null;
+let mmLabelTimer = null;
 
-function getAudioContext() {
-  if (!audioCtx) {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (AudioContextClass) audioCtx = new AudioContextClass();
-  }
-  if (audioCtx && audioCtx.state === "suspended") {
-    audioCtx.resume().catch(() => {});
-  }
-  return audioCtx;
-}
-
-function playClick() {
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-    const t = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(680, t);
-    osc.frequency.exponentialRampToValueAtTime(250, t + 0.022);
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.linearRampToValueAtTime(0.035, t + 0.003);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.026);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(t);
-    osc.stop(t + 0.03);
-  } catch {
-    // Audio optional
-  }
-}
-
-function playSuccess() {
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-    const t = ctx.currentTime;
-    [523.25, 659.25, 783.99].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(freq, t + i * 0.06);
-      gain.gain.setValueAtTime(0.0001, t + i * 0.06);
-      gain.gain.linearRampToValueAtTime(0.05, t + i * 0.06 + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 0.18);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(t + i * 0.06);
-      osc.stop(t + i * 0.06 + 0.2);
-    });
-  } catch {
-    // Audio optional
-  }
-}
+// /vault is intentionally silent (institutional execution surface, no un-mutable audio tones).
+const noopAudio = () => {};
 
 function syncBodyScrollLock() {
   if (typeof document === "undefined") return;
-  const modalIds = ["swapPrelaunchModal", "buyNaraModal", "anchorCardHelpModal", "anchorSeatReviewDrawer"];
+  const modalIds = ["buyNaraModal", "anchorCardHelpModal", "anchorSeatReviewDrawer"];
   const anyOpen = modalIds.some((id) => {
     const el = document.getElementById(id);
     return el && !el.classList.contains("hidden");
@@ -130,18 +78,12 @@ function openSafeWindow(url) {
 }
 
 function handleSwapButtonClick(e) {
-  playClick();
   if (SWAP_PUBLIC_LAUNCHED) {
     const isAnchor = !!(e && e.currentTarget && e.currentTarget.tagName === "A");
     if (!isAnchor) openSafeWindow(resolveCryptoSlipBuyUrl());
     return;
   }
   if (e && e.preventDefault) e.preventDefault();
-  const modal = document.getElementById("swapPrelaunchModal");
-  if (modal) {
-    modal.classList.remove("hidden");
-    syncBodyScrollLock();
-  }
 }
 
 function initSwapControl() {
@@ -153,8 +95,8 @@ function initSwapControl() {
   a.href = resolveCryptoSlipBuyUrl();
   a.target = "_blank";
   a.rel = "noopener noreferrer";
-  a.title = "Swap on CryptoSLIP, the NARA swap app (opens in a new tab)";
-  a.setAttribute("aria-label", "Swap on CryptoSLIP, opens in a new tab");
+  a.title = "Open CryptoSLIP App (opens in a new tab)";
+  a.setAttribute("aria-label", "Open CryptoSLIP App, opens in a new tab");
   a.setAttribute("data-on-click", "handleSwapButtonClick");
   while (el.firstChild) a.appendChild(el.firstChild);
   const mark = document.createElement("span");
@@ -163,16 +105,6 @@ function initSwapControl() {
   mark.textContent = "↗";
   a.appendChild(mark);
   el.replaceWith(a);
-}
-
-function closeSwapModal(e) {
-  if (e) e.stopPropagation();
-  playClick();
-  const modal = document.getElementById("swapPrelaunchModal");
-  if (modal) {
-    modal.classList.add("hidden");
-    syncBodyScrollLock();
-  }
 }
 
 function copyTextFallback(text) {
@@ -192,7 +124,6 @@ function copyTextFallback(text) {
 }
 
 function copyCA() {
-  playClick();
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(NARA_CONTRACT).catch(() => copyTextFallback(NARA_CONTRACT));
   } else {
@@ -202,9 +133,11 @@ function copyCA() {
   if (btnText) {
     btnText.textContent = "Copied";
     btnText.classList.add("text-emerald-300");
-    setTimeout(() => {
-      btnText.textContent = "Copy";
+    if (copyCaTimer) clearTimeout(copyCaTimer);
+    copyCaTimer = setTimeout(() => {
+      btnText.textContent = "Copy CA";
       btnText.classList.remove("text-emerald-300");
+      copyCaTimer = null;
     }, 2400);
   }
 }
@@ -219,9 +152,20 @@ function getEthereumProvider() {
   return window.ethereum;
 }
 
+function flashMetaMaskLabel(label, text, highlight = false) {
+  if (!label) return;
+  label.textContent = text;
+  if (highlight) label.classList.add("text-emerald-300");
+  if (mmLabelTimer) clearTimeout(mmLabelTimer);
+  mmLabelTimer = setTimeout(() => {
+    label.textContent = "Add $NARA to MetaMask";
+    label.classList.remove("text-emerald-300");
+    mmLabelTimer = null;
+  }, 3000);
+}
+
 async function addNaraToMetaMask() {
   if (isWalletRequestPending) return;
-  playClick();
   const label = document.getElementById("mmBtnLabel");
   const receiptBtn = document.getElementById("buyReceiptWatchBtn");
   const provider = getEthereumProvider();
@@ -266,14 +210,7 @@ async function addNaraToMetaMask() {
         },
       });
       if (wasAdded) {
-        if (label) {
-          label.textContent = "Token Added";
-          label.classList.add("text-emerald-300");
-          setTimeout(() => {
-            label.textContent = "Add $NARA to MetaMask";
-            label.classList.remove("text-emerald-300");
-          }, 3000);
-        }
+        flashMetaMaskLabel(label, "Token Added", true);
         if (receiptBtn) {
           receiptBtn.textContent = "✓ $NARA in Wallet";
           setTimeout(() => {
@@ -283,12 +220,7 @@ async function addNaraToMetaMask() {
       }
     } catch {
       copyCA();
-      if (label) {
-        label.textContent = "CA COPIED TO CLIPBOARD";
-        setTimeout(() => {
-          label.textContent = "Add $NARA to MetaMask";
-        }, 3000);
-      }
+      flashMetaMaskLabel(label, "CA COPIED TO CLIPBOARD");
       if (receiptBtn) {
         receiptBtn.textContent = "CA Copied ✓";
         setTimeout(() => {
@@ -300,12 +232,7 @@ async function addNaraToMetaMask() {
     }
   } else {
     copyCA();
-    if (label) {
-      label.textContent = "CA COPIED TO CLIPBOARD";
-      setTimeout(() => {
-        label.textContent = "Add $NARA to MetaMask";
-      }, 3000);
-    }
+    flashMetaMaskLabel(label, "CA COPIED TO CLIPBOARD");
     if (receiptBtn) {
       receiptBtn.textContent = "CA Copied ✓";
       setTimeout(() => {
@@ -327,21 +254,20 @@ function buildVaultShareUrls() {
   const shareUrl = `${CANONICAL_URL.replace(/\/$/, "")}/s/vault`;
   const entryEth = summary.minEthDisplay || "1.61";
   const priceLine =
-    summary.spotUsdPerNara && summary.maxDiscountPct && summary.maxDiscountPct >= 8
-      ? `• Wave 1 from ${entryEth} ETH (up to -${summary.maxDiscountPct}% vs $${Math.round(summary.spotUsdPerNara).toLocaleString("en-US")} v4 spot on larger tiers)`
-      : `• Wave 1 entry from ${entryEth} ETH (Wave 2 steps up +15%)`;
+    summary.spotUsdPerNara && summary.maxDiscountPct && summary.maxDiscountPct >= 5
+      ? `• Wave 1 from ${entryEth} ETH (up to -${summary.maxDiscountPct}% vs $${Math.round(summary.spotUsdPerNara).toLocaleString("en-US")} v4 spot incl. live chest)`
+      : `• Wave 1 fixed-ETH entry from ${entryEth} ETH (0% AMM pool slippage)`;
   const chestLine = summary.totalAccruedNaraDisplay
-    ? `• +${summary.totalAccruedNaraDisplay} $NARA accrued inside chests`
-    : "• 900s $NARA pulses + ETH/USDC cash stack inside each receipt";
-  const text = `Wave 1 $NARA Vault Receipts on Base (@NARA_protocol):\n\n${priceLine}\n• 0% AMM slippage · 90d–365d across 6 tiers (up to 18x pulse share)\n${chestLine}\n\nInspect 29 Wave 1 vaults 👇`;
+    ? `• +${summary.totalAccruedNaraDisplay} $NARA accrued inside chests (100% transfers to buyer)`
+    : "• 900s variable $NARA pulses + ETH/USDC stack inside each receipt";
+  const text = `Wave 1 $NARA Vault Receipts on Base (@NARA_protocol):\n\n${priceLine}\n• 0% AMM slippage · 90d–365d across 6 tiers (1.00x–4.00x duration weight)\n${chestLine}\n\nInspect 29 Wave 1 vaults 👇`;
   return {
     xUrl: `https://x.com/intent/post?text=${rfc3986Encode(text)}&url=${rfc3986Encode(shareUrl)}`,
-    castUrl: `https://warpcast.com/~/compose?text=${rfc3986Encode(text)}&embeds[]=${rfc3986Encode(shareUrl)}`,
+    castUrl: `https://farcaster.xyz/~/compose?text=${rfc3986Encode(text)}&embeds[]=${rfc3986Encode(shareUrl)}`,
   };
 }
 
 function shareVaultOnX(e) {
-  playClick();
   const { xUrl } = buildVaultShareUrls();
   if (e && e.currentTarget && e.currentTarget.tagName === "A") {
     e.currentTarget.href = xUrl;
@@ -352,7 +278,6 @@ function shareVaultOnX(e) {
 }
 
 function shareVaultOnCast(e) {
-  playClick();
   const { castUrl } = buildVaultShareUrls();
   if (e && e.currentTarget && e.currentTarget.tagName === "A") {
     e.currentTarget.href = castUrl;
@@ -364,13 +289,8 @@ function shareVaultOnCast(e) {
 
 document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key === "Escape") {
-    const swapModal = document.getElementById("swapPrelaunchModal");
-    if (isBuyModalOpen()) {
-      closeBuyModal();
-    } else if (swapModal && !swapModal.classList.contains("hidden")) {
-      closeSwapModal();
-    }
+  if (e.key === "Escape" && isBuyModalOpen()) {
+    closeBuyModal();
   }
 });
 
@@ -391,8 +311,6 @@ const ACTIONS = {
   executeBuyModalSwap: () => executeBuyModalSwap(),
   applyLowFeeSwapSize: () => applyLowFeeSwapSize(),
   handleSwapButtonClick: (e) => handleSwapButtonClick(e),
-  closeSwapModalBackdrop: (e) => closeSwapModal(e),
-  closeSwapModal: () => closeSwapModal(),
   copyCA: () => copyCA(),
   addNaraToMetaMask: () => addNaraToMetaMask(),
   shareVaultOnX: (e) => shareVaultOnX(e),
@@ -442,15 +360,15 @@ initSwapControl();
 bindActions();
 
 initBuyExperience({
-  playClick,
-  playSuccess,
+  playClick: noopAudio,
+  playSuccess: noopAudio,
   copyCA,
   onModalVisibilityChange: syncBodyScrollLock,
 });
 
 initAnchorSeats({
   bindActions,
-  playClick,
-  playSuccess,
+  playClick: noopAudio,
+  playSuccess: noopAudio,
   onModalVisibilityChange: syncBodyScrollLock,
 });

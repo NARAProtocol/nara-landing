@@ -7,8 +7,9 @@
  * the leaderboard Function behave exactly as they do without a service worker.
  */
 
-const CACHE_NAME = "nara-landing-shell-v20261115a";
+const CACHE_NAME = "nara-landing-shell-v20261119a";
 const SHELL_KEY = "/";
+const MAX_DYNAMIC_ASSETS = 40;
 
 // Only paths that exist and answer 200 directly. Never list "/index.html": Cloudflare Pages
 // answers it with a 308 to "/", and cache.add() of that redirected response stalls the install
@@ -92,13 +93,24 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Same-origin static assets: cache first, refresh in the background (stale-while-revalidate).
+  // Same-origin static assets: exact URL match (respects ?v= cache-busting) with background refresh & bounded LRU cap.
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      const cached = (await cache.match(request)) || (await cache.match(request, { ignoreSearch: true }));
-      const network = fetch(request).then((response) => {
-        if (isCacheable(response)) cache.put(request, response.clone()).catch(() => {});
+      const cached = await cache.match(request);
+      const network = fetch(request).then(async (response) => {
+        if (isCacheable(response)) {
+          await cache.put(request, response.clone()).catch(() => {});
+          if (url.pathname.startsWith("/assets/")) {
+            const keys = await cache.keys();
+            const assetKeys = keys.filter((k) => new URL(k.url).pathname.startsWith("/assets/"));
+            if (assetKeys.length > MAX_DYNAMIC_ASSETS) {
+              await Promise.all(
+                assetKeys.slice(0, assetKeys.length - MAX_DYNAMIC_ASSETS).map((k) => cache.delete(k).catch(() => {}))
+              );
+            }
+          }
+        }
         return response;
       });
       if (cached) {

@@ -118,8 +118,60 @@ test("ERC-5792 trySendCallsWithErc8021 requires explicit dataSuffix capability a
     capturedSendCalls.capabilities.dataSuffix.value,
     "0x62635f6737316a666636750b0080218021802180218021802180218021"
   );
+  // Inner calls must NOT get double-appended with ERC-8021 bytes when capabilities.dataSuffix is set
+  assert.equal(capturedSendCalls.calls[0].data, "0x095ea7b300000000");
+  assert.equal(capturedSendCalls.calls[2].data, "0x3593564c00000000");
 
-  // 3. User rejection (4001) throws immediately and NEVER falls back to eth_sendTransaction
+  // 3. Multi-call batch MUST NOT downgrade to non-atomic v1.0 when v2.0.0 rejects
+  const v2RejectCalls = [];
+  const noDowngradeProvider = {
+    async request({ method, params }) {
+      if (method === "wallet_getCapabilities") {
+        return { "0x2105": { dataSuffix: { supported: true }, atomicBatch: { supported: true } } };
+      }
+      if (method === "wallet_sendCalls") {
+        v2RejectCalls.push(params[0].version);
+        throw new Error("Unsupported version 2.0.0");
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  const noDowngradeRes = await trySendCallsWithErc8021({
+    provider: noDowngradeProvider,
+    from: signer,
+    calls: [
+      { to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", data: "0x095ea7b300000000" },
+      { to: "0x6fF5693b99212Da76ad316178A184AB56D299b43", data: "0x3593564c00000000" },
+    ],
+    codesInput: "bc_g71jff6u",
+  });
+  assert.equal(noDowngradeRes.usedSendCalls, false);
+  assert.deepEqual(v2RejectCalls, ["2.0.0"]);
+
+  // 4. Malformed wallet_sendCalls success payload (no string batchId) throws to prevent duplicate tx submission
+  const malformedProvider = {
+    async request({ method }) {
+      if (method === "wallet_getCapabilities") {
+        return { "0x2105": { dataSuffix: { supported: true } } };
+      }
+      if (method === "wallet_sendCalls") {
+        return { unexpected: true };
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  await assert.rejects(
+    () =>
+      trySendCallsWithErc8021({
+        provider: malformedProvider,
+        from: signer,
+        calls: [{ to: signer, data: "0x095ea7b300000000" }],
+        codesInput: "bc_g71jff6u",
+      }),
+    /without returning a tracking ID/
+  );
+
+  // 5. User rejection (4001) throws immediately and NEVER falls back to eth_sendTransaction
   const rejectProvider = {
     async request({ method }) {
       if (method === "wallet_getCapabilities") {

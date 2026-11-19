@@ -592,3 +592,57 @@ test("GDPR Art. 17 erasure: self-service delete (claimCode or operatorKey) and a
     restore();
   }
 });
+
+test("POST rate limits even when client IP header is missing and blocks keyless legacy handle takeover", async () => {
+  const kv = makeKV();
+  // Seed a legacy keyless entry (no keyHash)
+  await kv.put(
+    "fame_board_v1",
+    JSON.stringify([{ handle: "@legacy_op", score: 25, tier: "S", date: "Nov 1, 2026", timestamp: 1700000000000, platform: "x" }])
+  );
+  const env = { NARA_LEADERBOARD_KV: kv, TURNSTILE_SECRET_KEY: "test-secret" };
+  const restore = withTurnstile({ success: true });
+  try {
+    // 1. Attempting to attach operatorKey or wallet onto a legacy keyless row returns 403 handle_locked
+    const takeoverRes = await onRequestPost(makeContext({
+      method: "POST",
+      body: {
+        ...GOOD,
+        handle: "@legacy_op",
+        score: 20,
+        operatorKey: "attacker_claiming_legacy_handle",
+        wallet: "0x1111111111111111111111111111111111111111",
+      },
+      headers: GOOD_HEADERS,
+      env,
+      ip: "203.0.113.77",
+    }));
+    assert.equal(takeoverRes.status, 403);
+    assert.equal((await takeoverRes.json()).error, "handle_locked");
+
+    // 2. Missing IP header still enforces the 5/hour bucket (never fails open)
+    const noIpHeaders = { Origin: ORIGIN, "Content-Type": "application/json" };
+    for (let i = 1; i <= 5; i++) {
+      const r = await onRequestPost({
+        request: new Request(`${ORIGIN}/api/leaderboard`, {
+          method: "POST",
+          headers: noIpHeaders,
+          body: JSON.stringify({ ...GOOD, handle: `@noip_${i}`, score: 20 + i, operatorKey: `key_noip_${i}_123456` }),
+        }),
+        env,
+      });
+      assert.equal(r.status, 200, `missing-IP request ${i} should succeed within limit`);
+    }
+    const r6 = await onRequestPost({
+      request: new Request(`${ORIGIN}/api/leaderboard`, {
+        method: "POST",
+        headers: noIpHeaders,
+        body: JSON.stringify({ ...GOOD, handle: "@noip_6", score: 26, operatorKey: "key_noip_6_123456" }),
+      }),
+      env,
+    });
+    assert.equal(r6.status, 429, "6th missing-IP submission must be rate limited");
+  } finally {
+    restore();
+  }
+});

@@ -111,16 +111,40 @@ const clip = await page.evaluate(() => navigator.clipboard.readText());
 if (clip !== "0x91FB78A9F46B67f54BbD4489941d19666b2fAe0f") fail(`clipboard got ${clip}`);
 note("copy ca ok");
 
-// Tweet modes + reroll + X Reach toggle + Farcaster embeds[] + Self-Reply CA copy
+// Tweet modes + reroll + X-weighted <=280 char check + X Reach toggle + Farcaster embeds[] + Self-Reply CA copy
+const xWeightedLen = (str, withUrl = true) => {
+  let n = 0;
+  for (const ch of str.replace(/\uFE0F/g, "")) n += ch.codePointAt(0) > 0x1f00 ? 2 : 1;
+  return withUrl ? n + 24 : n;
+};
 for (const mode of ["receipt", "lore", "unhinged", "sticker", "flex"]) {
   await page.click(`#tabBtn-${mode}`);
-  const text = await page.locator("#tweetPreviewDisplay").innerText();
-  if (!text.trim()) fail(`empty preview for ${mode}`);
-  if (!text.includes("$NARA")) fail(`missing $NARA in ${mode} preview`);
-  if (/^\[[A-Z0-9 _#/:]+\]/.test(text.trim())) fail(`bot-bracket prefix still in ${mode} preview: ${text.slice(0, 80)}`);
-  if (/0x91FB\.\.\.Ae0f|Card image|naraprotocol\.(com|io)/i.test(text)) fail(`truncated CA, fake image notice, or duplicate URL in ${mode} preview: ${text.slice(0, 120)}`);
-  if (/NFT|on-chain|onchain|meme\.html|\blocked\b|\bunlock/i.test(text)) fail(`banned wording in ${mode} preview: ${text.slice(0, 80)}`);
+  for (let rollIdx = 0; rollIdx < 4; rollIdx++) {
+    if (rollIdx > 0) await page.click('[data-on-click="rerollActiveMode"]');
+    const text = await page.locator("#tweetPreviewDisplay").innerText();
+    if (!text.trim()) fail(`empty preview for ${mode}`);
+    if (!text.includes("$NARA")) fail(`missing $NARA in ${mode} preview: ${text.slice(0, 80)}`);
+    if (/^\[[A-Z0-9 _#/:]+\]/.test(text.trim())) fail(`bot-bracket prefix still in ${mode} preview: ${text.slice(0, 80)}`);
+    if (/0x91FB\.\.\.Ae0f|Card image|naraprotocol\.(com|io)/i.test(text)) fail(`truncated CA, fake image notice, or duplicate URL in ${mode} preview: ${text.slice(0, 120)}`);
+    if (/NFT|on-chain|onchain|meme\.html|\blocked\b|\bunlock/i.test(text)) fail(`banned wording in ${mode} preview: ${text.slice(0, 80)}`);
+    const wLen = xWeightedLen(text, true);
+    if (wLen > 280) fail(`${mode} roll #${rollIdx} exceeds 280 X-weighted chars (${wLen}): ${text}`);
+  }
 }
+// Verify clicking hero artwork #artFlushBtn directly + pressing 'f' hotkey plays the arcade cleanly
+await sleep(1100);
+const beforeArtFlush = await readCounter();
+await page.click("#artFlushBtn");
+await sleep(150);
+if ((await readCounter()) !== beforeArtFlush + 1) fail("clicking hero artwork #artFlushBtn did not trigger flush");
+await sleep(1100);
+await page.keyboard.press("Escape");
+await page.keyboard.press("f");
+await sleep(150);
+if ((await readCounter()) !== beforeArtFlush + 2) fail("pressing 'f' hotkey did not trigger flush");
+await sleep(1100);
+await page.keyboard.press("Escape");
+await page.click("#tabBtn-flex");
 await page.click('[data-on-click="rerollActiveMode"]');
 await page.click('[data-on-click="copyForgeTweetText"]');
 const copiedTweet = await page.evaluate(() => navigator.clipboard.readText());
@@ -223,10 +247,12 @@ if ((await page.locator("#buyModalPayUnit").innerText()).trim() !== "NARA") {
 await page.click("#buyTabBuyBtn");
 await sleep(700);
 await page.screenshot({ path: path.join(OUT, "buy-modal-1440.png") });
+// Verify Escape closes #buyNaraModal even while focus is inside #buyModalAmountInput
+await page.focus("#buyModalAmountInput");
 await page.keyboard.press("Escape");
 await sleep(150);
 if (await page.locator("#buyNaraModal").isVisible()) {
-  fail("Escape did not close #buyNaraModal");
+  fail("Escape did not close #buyNaraModal when focused inside #buyModalAmountInput");
 }
 // Also verify top-bar #headerBuyBtn opens the modal
 await page.click("#headerBuyBtn");
@@ -248,11 +274,13 @@ note("metamask fallback ok");
 await page.click('[data-on-click="refreshLeaderboardUI"]');
 await sleep(300);
 
-// Home Vault Gateway section + navigation strip check
-if (!(await page.locator("#sectorNavStrip").isVisible())) fail("#sectorNavStrip is not visible");
+// Home Vault-First Showcase & Hero Protocol Proof check
+if (!(await page.locator("#heroSpotPrice").isVisible())) fail("#heroSpotPrice is not visible");
+if (!(await page.locator("#heroCircSupply").isVisible())) fail("#heroCircSupply is not visible");
 if (!(await page.locator("#anchorSeatsSection").isVisible())) fail("#anchorSeatsSection is not visible on home page");
 if (!(await page.locator("#homeVaultLiveBadge").isVisible())) fail("#homeVaultLiveBadge is not visible on home page");
-note("home vault gateway section + sector nav strip ok");
+if (!(await page.locator("#homeVaultTierPreview").isVisible())) fail("#homeVaultTierPreview 6-tier table is not visible on home page");
+note("home vault-first showcase + protocol proof strip ok");
 
 // External links: every target=_blank anchor has rel=noopener and an https href
 const anchors = await page.$$eval('a[target="_blank"]', (as) => as.map((a) => ({ href: a.getAttribute("href"), rel: a.getAttribute("rel") })));
@@ -377,8 +405,25 @@ await page.setViewportSize({ width: 390, height: 844 });
 await page.goto("/", { waitUntil: "load" });
 await sleep(500);
 await page.screenshot({ path: path.join(OUT, "home-390.png"), fullPage: true });
-const scrollW = await page.evaluate(() => document.documentElement.scrollWidth);
+const scrollW = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth));
 if (scrollW > 390) fail(`horizontal overflow on mobile: ${scrollW}px`);
+const homeHeaderOverlap = await page.evaluate(() => {
+  const els = Array.from(document.querySelectorAll("header button, header a")).filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+  for (let i = 0; i < els.length; i++) {
+    const a = els[i].getBoundingClientRect();
+    for (let j = i + 1; j < els.length; j++) {
+      const b = els[j].getBoundingClientRect();
+      const xOverlap = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+      const yOverlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      if (xOverlap > 1 && yOverlap > 1) return `${els[i].textContent?.trim()} overlaps ${els[j].textContent?.trim()} by ${Math.round(xOverlap)}px`;
+    }
+  }
+  return "";
+});
+if (homeHeaderOverlap) fail(`header button overlap on 390px home: ${homeHeaderOverlap}`);
 
 await page.goto("/?buy=1", { waitUntil: "load" });
 await sleep(400);
@@ -454,13 +499,15 @@ if (!(await page.locator("#anchorCardHelpModal").isVisible())) {
 }
 const helpModalText = await page.locator("#anchorCardHelpModal").innerText();
 if (
-  !/Market Spot/i.test(helpModalText) ||
-  !/You Pay/i.test(helpModalText) ||
-  !/Monthly Pulses/i.test(helpModalText) ||
+  !/(Total Value Now|Market Spot)/i.test(helpModalText) ||
+  !/Your Fixed Cost/i.test(helpModalText) ||
+  !/Same ETH on DEX Swap/i.test(helpModalText) ||
+  !/Est\. Monthly Pulses/i.test(helpModalText) ||
   !/In Chest Now/i.test(helpModalText) ||
-  !/Base Pool Liquidity/i.test(helpModalText)
+  !/Treasury Safe \(Base LP & Ops\)/i.test(helpModalText) ||
+  !/Active Holders \(On-Chain\)/i.test(helpModalText)
 ) {
-  fail(`/vault #anchorCardHelpModal missing structured breakdown rows: ${helpModalText.slice(0, 180)}`);
+  fail(`/vault #anchorCardHelpModal missing structured breakdown rows: ${helpModalText.slice(0, 220)}`);
 }
 await page.screenshot({ path: path.join(OUT, "vault-card-help-1440.png") });
 // Click outside the modal card on the backdrop — must close automatically without clicking "?" again
@@ -518,8 +565,17 @@ await page
   .catch(() => {});
 await sleep(250);
 await page.screenshot({ path: path.join(OUT, "vault-390.png"), fullPage: true });
-const vaultScrollW = await page.evaluate(() => document.documentElement.scrollWidth);
+const vaultScrollW = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth));
 if (vaultScrollW > 390) fail(`horizontal overflow on /vault mobile: ${vaultScrollW}px`);
+const vaultCardOverflow = await page.evaluate(() => {
+  const bad = [];
+  for (const el of document.querySelectorAll("#anchorSeatsGrid > div, header, main, footer")) {
+    const r = el.getBoundingClientRect();
+    if (r.right > 391) bad.push(`${el.tagName}#${el.id || "card"} right=${Math.round(r.right)}`);
+  }
+  return bad.join(", ");
+});
+if (vaultCardOverflow) fail(`/vault 390px layout right-edge overflow: ${vaultCardOverflow}`);
 
 // Mobile Browser Checkout Test (390x844, no injected wallet — Safari / Chrome / Telegram):
 // Tapping Select MUST open the mobile bottom-sheet right in view with 1-tap wallet deep-links (never #buyNaraModal)

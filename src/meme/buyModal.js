@@ -9,6 +9,7 @@
 import {
   BASE_BUILDER_CODE,
   BASE_CHAIN_ID_HEX,
+  isTelegramWebView,
   resolveCryptoSlipBuyUrl,
   resolveCryptoSlipCommitUrl,
   NARA_CONTRACT,
@@ -630,6 +631,8 @@ export async function refreshHeroMarketTelemetry() {
   const spotEl = document.getElementById("heroSpotPrice");
   const modalSpotEl = document.getElementById("buyModalSpotBadge");
   const modalCircEl = document.getElementById("buyModalCircBadge");
+  const heroCircEl = document.getElementById("heroCircSupply");
+  const heroSealedEl = document.getElementById("heroSealedPct");
 
   // 1. Live Spot Price
   (async () => {
@@ -653,7 +656,7 @@ export async function refreshHeroMarketTelemetry() {
     }
     const formatted = formatUsdPrice(spotUsd);
     if (formatted) {
-      if (spotEl) spotEl.textContent = `1 NARA ≈ ${formatted}`;
+      if (spotEl) spotEl.textContent = formatted;
       if (modalSpotEl) modalSpotEl.textContent = `1 NARA ≈ ${formatted}`;
     }
   })();
@@ -665,8 +668,14 @@ export async function refreshHeroMarketTelemetry() {
       if (!res.ok) return;
       const data = await res.json();
       const circNum = Number(data?.circulatingSupply);
-      if (Number.isFinite(circNum) && circNum > 0 && modalCircEl) {
-        modalCircEl.textContent = `${circNum.toLocaleString("en-US", { maximumFractionDigits: 2 })} / 1M CIRC`;
+      if (Number.isFinite(circNum) && circNum > 0) {
+        const circShort = circNum.toLocaleString("en-US", { maximumFractionDigits: 2 });
+        if (modalCircEl) modalCircEl.textContent = `${circShort} / 1M CIRC`;
+        if (heroCircEl) heroCircEl.textContent = `${circShort} / 1M`;
+        if (heroSealedEl) {
+          const sealedPct = Math.max(0, Math.min(100, (1 - circNum / 1_000_000) * 100));
+          heroSealedEl.textContent = `${sealedPct.toFixed(2)}% sealed in reserve`;
+        }
       }
     } catch {
       // Keep clean default in static preview
@@ -674,15 +683,20 @@ export async function refreshHeroMarketTelemetry() {
   })();
 }
 
+let buyCopyCaTimer = null;
+let buyModalPrevFocus = null;
+
 export function copyBuyModalCA() {
   copyCaFn();
   const label = document.getElementById("buyModalCopyCaLabel");
   if (label) {
-    label.textContent = "✓ CA COPIED";
+    if (buyCopyCaTimer) clearTimeout(buyCopyCaTimer);
+    label.textContent = "Copied ✓";
     label.classList.add("text-naraGreen");
-    setTimeout(() => {
-      label.textContent = "📋 COPY CA";
+    buyCopyCaTimer = setTimeout(() => {
+      label.textContent = "Copy CA";
       label.classList.remove("text-naraGreen");
+      buyCopyCaTimer = null;
     }, 2200);
   }
 }
@@ -698,12 +712,19 @@ export function openBuyModal() {
   soundClickFn();
   const modal = document.getElementById("buyNaraModal");
   if (!modal) return;
+  if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+    buyModalPrevFocus = document.activeElement;
+  }
   discoverInjectedWallets();
   modal.classList.remove("hidden");
   modalVisibilityChangeFn();
   renderModalControls();
   renderModalWalletSection();
   triggerModalQuote(true);
+  const firstFocus = modal.querySelector("#buyModalAmountInput, button:not([disabled]), a[href]");
+  if (firstFocus && typeof firstFocus.focus === "function") {
+    requestAnimationFrame(() => firstFocus.focus());
+  }
 }
 
 export function closeBuyModal(e) {
@@ -713,6 +734,10 @@ export function closeBuyModal(e) {
   const modal = document.getElementById("buyNaraModal");
   if (modal) modal.classList.add("hidden");
   modalVisibilityChangeFn();
+  if (buyModalPrevFocus && buyModalPrevFocus.isConnected && typeof buyModalPrevFocus.focus === "function") {
+    buyModalPrevFocus.focus();
+  }
+  buyModalPrevFocus = null;
 }
 
 function setModalStatus(kind, message) {
@@ -727,10 +752,10 @@ function setModalStatus(kind, message) {
   currentModalStatusKind = kind;
   box.classList.remove("hidden");
   const styles = {
-    info: "p-2.5 bg-sky-500/10 border border-sky-400/40 text-sky-200 text-[10px] font-mono leading-relaxed",
-    warn: "p-2.5 bg-amber-500/10 border border-amber-400/40 text-amber-200 text-[10px] font-mono leading-relaxed",
-    error: "p-2.5 bg-red-500/15 border border-red-500/50 text-red-200 text-[10px] font-mono leading-relaxed",
-    success: "p-2.5 bg-emerald-500/15 border border-naraGreen/60 text-naraGreen text-[10px] font-mono leading-relaxed",
+    info: "p-3 rounded-xl bg-sky-500/10 border border-sky-400/35 text-sky-200 text-xs font-sans leading-relaxed",
+    warn: "p-3 rounded-xl bg-amber-500/10 border border-amber-400/35 text-amber-200 text-xs font-sans leading-relaxed",
+    error: "p-3 rounded-xl bg-red-500/15 border border-red-500/45 text-red-200 text-xs font-sans leading-relaxed",
+    success: "p-3 rounded-xl bg-emerald-500/15 border border-emerald-400/50 text-emerald-300 text-xs font-sans leading-relaxed",
   };
   box.className = styles[kind] || styles.info;
   box.textContent = message;
@@ -747,7 +772,15 @@ function showTxReceiptBox(txHash, summaryLine) {
   const linkEl = document.getElementById("buyModalReceiptLink");
   if (!box) return;
   if (textEl) textEl.textContent = summaryLine;
-  if (linkEl) linkEl.href = `https://basescan.org/tx/${txHash}`;
+  if (linkEl) {
+    if (typeof txHash === "string" && /^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+      linkEl.href = `https://basescan.org/tx/${txHash}`;
+      linkEl.classList.remove("hidden");
+    } else {
+      linkEl.removeAttribute("href");
+      linkEl.classList.add("hidden");
+    }
+  }
   box.classList.remove("hidden");
 }
 
@@ -769,6 +802,23 @@ function renderModalWalletSection() {
   if (mmDeepLink) mmDeepLink.href = `https://link.metamask.io/dapp/naraprotocol.io${buyTargetPath}`;
   if (cbDeepLink) cbDeepLink.href = `https://go.cb-w.com/dapp?cb_url=${encodeURIComponent(fullBuyUrl)}`;
   if (csDeepLink) csDeepLink.href = resolveCryptoSlipBuyUrl();
+
+  // In Telegram WebView, route external wallet deep links through Telegram.WebApp.openLink so iOS/Android launch the native app
+  if (typeof window !== "undefined" && isTelegramWebView() && typeof window.Telegram?.WebApp?.openLink === "function") {
+    for (const el of [mmDeepLink, cbDeepLink]) {
+      if (el && !el.dataset.tgOpenBound) {
+        el.dataset.tgOpenBound = "1";
+        el.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          try {
+            window.Telegram.WebApp.openLink(el.href);
+          } catch {
+            window.open(el.href, "_blank", "noopener,noreferrer");
+          }
+        });
+      }
+    }
+  }
 
   if (connectedAccount) {
     if (walletBox) walletBox.classList.remove("hidden");
@@ -1238,7 +1288,11 @@ async function waitForPermit2AllowanceSync(owner, token, spender, minAmountWei, 
   }
 }
 
-async function simulateUniversalRouterSwap(provider, txRequest) {
+export async function simulateSwapFailClosed(
+  provider,
+  txRequest,
+  { fallbackRpcCall = publicBaseRpcRequest, slippageBps = 500, onRefreshQuote = null } = {}
+) {
   const callObj = {
     from: txRequest.from,
     to: txRequest.to,
@@ -1246,50 +1300,80 @@ async function simulateUniversalRouterSwap(provider, txRequest) {
     value: txRequest.value,
   };
 
-  let simErr = null;
+  let primaryErr = null;
   try {
     await provider.request({
       method: "eth_call",
       params: [callObj, "latest"],
     });
-    return;
+    return true;
   } catch (err) {
+    primaryErr = err;
     const msg = String(err?.shortMessage || err?.message || "");
+    const dataHex = String(err?.data?.data || err?.data || "");
     const code = err?.code ?? err?.data?.originalError?.code;
-    if (
+    const isRevert =
       code === 3 ||
+      /^0x[0-9a-fA-F]{8,}/.test(dataHex) ||
       /execution reverted|revert|TooLittleReceived|V4TooLittleReceived|AllowanceExpired|InsufficientAllowance|insufficient funds/i.test(
         msg
-      )
-    ) {
-      simErr = err;
-    } else {
-      // Wallet RPC might not support eth_call with value/data cleanly -> verify via public Base RPC
-      try {
-        await publicBaseRpcRequest("eth_call", [callObj, "latest"]);
-        return;
-      } catch (fallbackErr) {
-        if (fallbackErr?.isRevert || /revert|TooLittleReceived|Allowance|insufficient/i.test(String(fallbackErr?.message || ""))) {
-          simErr = fallbackErr;
-        }
+      );
+    if (isRevert) {
+      if (typeof onRefreshQuote === "function") onRefreshQuote();
+      if (/AllowanceExpired|InsufficientAllowance/i.test(msg)) {
+        throw new Error("Base RPC is still syncing your Permit2 approval. Wait 2 seconds and click Swap again.");
       }
+      if (/insufficient funds/i.test(msg)) {
+        throw new Error("Insufficient Base ETH in wallet to cover swap value + L2 network gas.");
+      }
+      const slipTip =
+        slippageBps < 2000
+          ? " Quote refreshed — try 10%–20% slippage or a smaller clip."
+          : " Quote refreshed — review and confirm again.";
+      throw new Error(
+        `Safety simulation blocked a reverting swap (pool price or block-surge fee shifted).${slipTip}`
+      );
     }
   }
 
-  if (simErr) {
-    const rawMsg = String(simErr?.shortMessage || simErr?.message || "");
-    triggerModalQuote(true);
+  // Non-revert wallet transport error -> require clean eth_call pass on independent public Base RPC (fail CLOSED)
+  try {
+    await fallbackRpcCall("eth_call", [callObj, "latest"]);
+    return true;
+  } catch (fallbackErr) {
+    if (typeof onRefreshQuote === "function") onRefreshQuote();
+    const rawMsg = String(fallbackErr?.shortMessage || fallbackErr?.message || primaryErr?.message || "");
     if (/AllowanceExpired|InsufficientAllowance/i.test(rawMsg)) {
       throw new Error("Base RPC is still syncing your Permit2 approval. Wait 2 seconds and click Swap again.");
     }
     if (/insufficient funds/i.test(rawMsg)) {
       throw new Error("Insufficient Base ETH in wallet to cover swap value + L2 network gas.");
     }
-    const slipTip = modalSlippageBps < 2000 ? " Quote refreshed — try 10%–20% slippage or a smaller clip." : " Quote refreshed — review and confirm again.";
+    if (
+      fallbackErr?.isRevert ||
+      /^0x[0-9a-fA-F]{8,}/.test(String(fallbackErr?.data?.data || fallbackErr?.data || "")) ||
+      /revert|TooLittleReceived|V4TooLittleReceived/i.test(rawMsg)
+    ) {
+      const slipTip =
+        slippageBps < 2000
+          ? " Quote refreshed — try 10%–20% slippage or a smaller clip."
+          : " Quote refreshed — review and confirm again.";
+      throw new Error(
+        `Safety simulation blocked a reverting swap (pool price or block-surge fee shifted).${slipTip}`
+      );
+    }
     throw new Error(
-      `Safety simulation blocked a reverting swap (pool price or block-surge fee shifted).${slipTip}`
+      `Safety simulation blocked unverified swap (both wallet and Base RPC checks failed): ${rawMsg.slice(0, 120)}`
     );
   }
+}
+
+async function simulateUniversalRouterSwap(provider, txRequest) {
+  return simulateSwapFailClosed(provider, txRequest, {
+    fallbackRpcCall: publicBaseRpcRequest,
+    slippageBps: modalSlippageBps,
+    onRefreshQuote: () => triggerModalQuote(true),
+  });
 }
 
 export async function executeBuyModalSwap() {

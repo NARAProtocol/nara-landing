@@ -1,5 +1,22 @@
 {
   "version": 1,
-  "include": ["/", "/index.html", "/vault", "/vault/*", "/vault.html", "/api/*", "/.well-known/webauthn"],
+  "include": [
+    "/",
+    "/index.html",
+    "/vault",
+    "/vault/*",
+    "/vault.html",
+    "/s/*",
+    "/research/*",
+    "/swap",
+    "/swap/*",
+    "/app",
+    "/app/*",
+    "/buy",
+    "/buy/*",
+    "/commit",
+    "/api/*",
+    "/.well-known/webauthn"
+  ],
   "exclude": []
 }

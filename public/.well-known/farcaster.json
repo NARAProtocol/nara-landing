@@ -12,7 +12,7 @@
     "imageUrl": "https://naraprotocol.io/og.png",
     "buttonTitle": "Open NARA Vaults & Swap",
     "splashImageUrl": "https://naraprotocol.io/icon-192.png",
-    "splashBackgroundColor": "#05070A",
+    "splashBackgroundColor": "#080C14",
     "primaryCategory": "finance",
     "tags": ["defi", "uniswap-v4", "dex", "base", "liquidity"]
   },
@@ -24,6 +24,6 @@
     "imageUrl": "https://naraprotocol.io/og.png",
     "buttonTitle": "Open NARA Vaults & Swap",
     "splashImageUrl": "https://naraprotocol.io/icon-192.png",
-    "splashBackgroundColor": "#05070A"
+    "splashBackgroundColor": "#080C14"
   }
 }

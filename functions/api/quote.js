@@ -199,8 +199,11 @@ export async function handleQuoteRequest(request, env, fetchImpl = globalThis.fe
 }
 
 export async function onRequestGet(ctx) {
-  return withEdgeCache(ctx, "https://naraprotocol.io/api/quote?summary=1", () =>
-    handleQuoteRequest(ctx.request, ctx.env)
+  return withEdgeCache(
+    ctx,
+    "https://naraprotocol.io/api/quote?summary=1",
+    () => handleQuoteRequest(ctx.request, ctx.env),
+    ["summary", "direction", "asset", "amount", "slippageBps"],
   );
 }
 

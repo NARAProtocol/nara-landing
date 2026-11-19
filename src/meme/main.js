@@ -36,9 +36,14 @@ import {
   getAnchorShowcaseSummary,
 } from "./anchorSeats.js";
 
+let lootPrevFocus = null;
+let victoryPrevFocus = null;
+let copyCaTimer = null;
+let mmLabelTimer = null;
+
 function syncBodyScrollLock() {
   if (typeof document === "undefined") return;
-  const modalIds = ["lootModal", "victoryModal", "swapPrelaunchModal", "buyNaraModal", "anchorCardHelpModal", "anchorSeatReviewDrawer"];
+  const modalIds = ["lootModal", "victoryModal", "buyNaraModal", "anchorCardHelpModal", "anchorSeatReviewDrawer"];
   const anyOpen = modalIds.some((id) => {
     const el = document.getElementById(id);
     return el && !el.classList.contains("hidden");
@@ -169,20 +174,17 @@ function loadRealFlushAudio() {
     });
 }
 
-// Audio unlock for mobile and desktop user gestures
+// Audio unlock strictly on first user gesture (zero AudioContext spawned at boot)
 function unlockAudioOnce() {
   getAudioContext();
   loadRealFlushAudio();
   window.removeEventListener('touchstart', unlockAudioOnce);
   window.removeEventListener('pointerdown', unlockAudioOnce);
+  window.removeEventListener('keydown', unlockAudioOnce);
 }
 window.addEventListener('touchstart', unlockAudioOnce, { passive: true });
 window.addEventListener('pointerdown', unlockAudioOnce, { passive: true });
-if (document.readyState === 'complete') {
-  setTimeout(loadRealFlushAudio, 250);
-} else {
-  window.addEventListener('load', () => setTimeout(loadRealFlushAudio, 250));
-}
+window.addEventListener('keydown', unlockAudioOnce, { passive: true });
 
 function toggleAudio() {
   const label = document.getElementById("audioLabel");
@@ -835,50 +837,21 @@ function getOperatorTier(count) {
 }
 
 const RANDOM_HOOKS = [
-  (n) => n > 0
-    ? `The toad stared into my soul while I flushed ${n} ${n === 1 ? 'short' : 'shorts'}.`
-    : `The toad stared into my soul from the porcelain bowl on Base.`,
-  (n) => n > 0
-    ? `Checked charts at 3 AM. Flushed ${n} ${n === 1 ? 'bear' : 'bears'} down $NARA.`
-    : `Checked charts at 3 AM. Found the $NARA bowl. Machine loading.`,
-  (n) => n > 0
-    ? `Read the candlestick roll: BANKS FAIL. ${n} ${n === 1 ? 'bear' : 'bears'} flushed.`
-    : `Read the candlestick roll closely: BANKS FAIL. Token first.`,
-  (n) => n > 0
-    ? `Flushed ${n} ${n === 1 ? 'time' : 'times'}. The pipes whispered: token first.`
-    : `The sewer pipes whispered: token first. The machine follows.`,
-  (n) => n > 0
-    ? `Just wiped the floor with ${n} liquidated ${n === 1 ? 'short' : 'shorts'} on Base.`
-    : `Just wiped the floor with liquidated shorts. Base is live.`,
-  (n) => n > 0
-    ? `The candlestick roll doesn't lie: BANKS FAIL. ${n} purged.`
-    : `The candlestick roll doesn't lie: BANKS FAIL. Green candles only.`,
-  (n) => n > 0
-    ? `Told him not to short $NARA. Flushed him ${n} ${n === 1 ? 'time' : 'times'}.`
-    : `Told him not to short $NARA on Base. Green candles loading.`,
-  (n) => n > 0
-    ? `Red candle paper wiped. ${n} ${n === 1 ? 'flush' : 'flushes'} later, green remains.`
-    : `Red candle paper wiped. Only green God candles remain on Base.`,
-  (n) => n > 0
-    ? `Doctor said stop checking charts. Flushed ${n} ${n === 1 ? 'bear' : 'bears'} instead.`
-    : `Doctor said stop checking charts on the toilet. Opened $NARA.`,
-  (n) => n > 0
-    ? `Token first. The machine follows. ${n} ${n === 1 ? 'bear' : 'bears'} purged.`
-    : `Token first. The machine follows. The revolution starts on Base.`,
-  (n) => n > 0
-    ? `Decoded the candlestick roll: BANKS FAIL. ${n} ${n === 1 ? 'time' : 'times'} flushed.`
-    : `Decoded the candlestick roll wicks: BANKS FAIL. Pure catharsis.`,
-  (n) => n > 0
-    ? `No whitepaper needed. Flushed ${n} ${n === 1 ? 'short seller' : 'short sellers'} on Base.`
-    : `No whitepaper needed when green candles wipe out the bears.`
+  () => "Banks freeze accounts on Friday afternoon. $NARA mint authority is burned to 0x0 on Base.",
+  () => "Look closely at the candlestick roll: BANKS FAIL. Fixed 1,000,000 $NARA, 99.99% sealed on Base.",
+  () => "Token first. The machine follows. 35 live $NARA Base contracts with zero admin freeze.",
+  () => "No bank wire. No 0x address exposed. $0.00 gas payment links on Base with $NARA.",
+  () => "1,000,000 fixed $NARA cap. ~55 in active float. Every 15 minutes the reserve pulses.",
+  () => "Why pay DEX slippage on size when Wave 1 $NARA Vault Receipts settle at fixed ETH?",
+  () => "Your neobank puts a 5-day hold on your own money. $NARA settles 1:1 on Base in under a second.",
+  () => "Printed a 2-factor QR paper vault with zero seed phrase exposure. $NARA #BanksFail.",
 ];
 
 const RANDOM_REPLY_BAITS = [
-  "Drop your purge score 👇",
-  "How many bears did you flush? 👇",
-  "Beat my score or wipe with red paper 👇",
-  "Can anyone top this operator rank? 👇",
-  "Drop your score if you survived the flush 👇"
+  "Check the live Wave 1 chests or beat my arcade clicks 👇",
+  "Read the #BanksFail cipher & inspect the Base contracts 👇",
+  "Fewest clicks to 12/12 takes #1 on the board 👇",
+  "Compare Wave 1 Vault Receipts vs open-market DEX swap 👇",
 ];
 
 let currentRoll = {
@@ -914,6 +887,9 @@ function getShareUrl(slugOverride) {
     const stickerId = (userStash && userStash.activeStickerId) || 1;
     return `${base}/s/${stickerId}`;
   }
+  if (activeTweetMode === 'receipt') {
+    return `${base}/s/vault`;
+  }
   return CANONICAL_URL;
 }
 
@@ -945,60 +921,64 @@ function getXWeightedLength(text, hasUrl = true) {
   return hasUrl ? len + 24 : len;
 }
 
-const RECEIPT_OUTCOMES = [
-  "Wiped clean down the porcelain bowl 🚽",
-  "Siphoned straight into Base liquidity 🪠",
-  "Flushed by 900s green candles 🕯️",
-  "Settled on Base 8453 ⚡",
+const LORE_PILLARS = [
+  "1,000,000 fixed $NARA supply on Base. Mint authority burned (0x0). 99.99% sealed out of float while 15m variable pulses stream to committed positions.\n\nToken first. The machine follows. — @NARA_protocol #BanksFail",
+  "Look closely at the candlestick wicks on the $NARA roll: they spell BANKS FAIL.\n\n35 Base contracts. Uniswap v4 Hook. $0-gas CryptoSLIP links. Zero admin freeze.\n\n@NARA_protocol #BanksFail",
+  "CryptoSLIP by @NARA_protocol: send USDC, cbBTC, ETH, or $NARA in a chat link with $0.00 recipient gas — or print a 2-factor QR paper vault.\n\nNo bank permission needed. #BanksFail",
+  "Equal-footing $NARA V5 commitments: 1.00x–4.00x duration weight (1d–365d), 0% exit fee at maturity, and 5% secondary sale royalties to active holders.\n\n@NARA_protocol #BanksFail",
 ];
 
-const LORE_WHISPERS = [
-  "token first. the machine follows.",
-  "read the candlestick roll: BANKS FAIL.",
-  "green candles only in the porcelain bowl.",
-  "he who controls the roll controls Base.",
-  "bears belong in the sewer pipes.",
+const UNHINGED_BANGERS = [
+  "Your bank: 'Your $400 transfer is under manual review for 3–5 business days.'\n\nMeanwhile $NARA settles 1:1 on Base with burned mint authority and 15m variable pulses.\n\n#BanksFail @NARA_protocol",
+  "Legacy finance spent $50B on portals that freeze your own funds.\n\nWe put a toad on a toilet, hid #BanksFail in the candlesticks, and shipped 35 Base contracts.\n\n$NARA @NARA_protocol",
+  "No VC rounds. No admin freeze button. No 47-page roadmap PDF.\n\nJust 1,000,000 fixed $NARA, a live Uniswap v4 Hook, and Wave 1 Vault Receipts on Base.\n\n#BanksFail @NARA_protocol",
+  "Buying size on a thin DEX pool and eating slippage instead of checking Wave 1 $NARA Vault Receipts at fixed ETH + 0% pool slippage.\n\nCheck the math first. @NARA_protocol #BanksFail",
 ];
 
 let receiptOutcomeIdx = 0;
 let loreWhisperIdx = 0;
 
 function buildTweetByMode(mode, count, roll) {
-  const tier = getOperatorTier(count);
-  const opId = roll.opId;
+  const unlockedCount = userStash && userStash.unlocked ? Object.keys(userStash.unlocked).length : 0;
 
   if (mode === 'receipt') {
-    const bears = count > 0 ? count : 1;
-    const outcome = RECEIPT_OUTCOMES[receiptOutcomeIdx % RECEIPT_OUTCOMES.length];
-    return `Liquidation desk log #${opId} on Base:\n\n• Target: ${bears} overleveraged ${bears === 1 ? 'short' : 'shorts'}\n• Outcome: ${outcome}\n• Engine: $NARA 900s pulse (@NARA_protocol)\n\nDrop your run score 👇`;
+    const summary = getAnchorShowcaseSummary();
+    const entryEth = summary.minEthDisplay || "1.61";
+    const discTag =
+      summary.spotUsdPerNara && summary.maxDiscountPct && summary.maxDiscountPct >= 5
+        ? `up to -${summary.maxDiscountPct}% vs $${Math.round(summary.spotUsdPerNara).toLocaleString("en-US")} spot`
+        : "fixed ETH across 6 tiers";
+    const variants = [
+      `Wave 1 $NARA Vault Receipts on Base (@NARA_protocol):\n\n• 1.0–4.5 sealed $NARA from ${entryEth} ETH (${discTag})\n• 0% AMM slippage + 100% accrued chest transfers to buyer\n• 15m variable pulses (1.00x–4.00x weight)\n\nInspect live chests 👇`,
+      `Why Wave 1 $NARA Vault Receipts beat open-market clips on Base:\n\n• Fixed ETH settlement (${entryEth}–5.90 ETH), 0% pool impact\n• Live accrued chest USD included atomically\n• 95% Treasury Safe / 5% active holders\n\n@NARA_protocol 👇`,
+      `Every Wave 1 $NARA Vault Receipt shows live Principal + Accrued Chest USD up front.\n\n• Resell ERC-721 anytime (5% fee) or withdraw 100% at maturity (0% fee)\n• 15m variable pulses liquid anytime\n\n@NARA_protocol #BanksFail 👇`,
+    ];
+    return variants[receiptOutcomeIdx % variants.length];
   }
 
   if (mode === 'lore') {
-    const whisper = LORE_WHISPERS[loreWhisperIdx % LORE_WHISPERS.length];
-    return `${roll.hook}\n\n1,000,000 fixed $NARA supply on Base. ~99.5% sealed out of float while 900s pulses pay committed holders.\n\n"${whisper}" — @NARA_protocol`;
+    return LORE_PILLARS[loreWhisperIdx % LORE_PILLARS.length];
   }
 
   if (mode === 'unhinged') {
-    const n = count || 69;
-    return `Doctor told me to stop checking charts on the toilet.\n\nFlushed ${n} ${n === 1 ? 'bear' : 'bears'} down the $NARA bowl on Base instead (${tier.rank}).\n\n${roll.cta}`;
+    return UNHINGED_BANGERS[receiptOutcomeIdx % UNHINGED_BANGERS.length];
   }
 
   if (mode === 'sticker') {
-    const unlockedCount = userStash && userStash.unlocked ? Object.keys(userStash.unlocked).length : 0;
     if (unlockedCount === 0) {
-      return `12 rare $NARA sewer cards hiding in the porcelain vault on Base (@NARA_protocol).\n\nFewest clicks to 12/12 takes the Fame Board. Try a run 👇`;
+      return `12 satirical #BanksFail stickers hiding in the $NARA browser arcade (@NARA_protocol).\n\nFewest clicks to 12/12 claims #1 on the board. Try a run 👇`;
     }
     const stickerId = userStash.activeStickerId || 1;
     const sticker = STICKER_COLLECTION.find(s => s.id === stickerId) || STICKER_COLLECTION[0];
     const serial = (userStash.unlocked[sticker.id] && userStash.unlocked[sticker.id].serial) || roll.opId;
-    return `Pulled ${sticker.deco} ${sticker.name} (${sticker.rarity} · #${String(serial).padStart(4, "0")}) from the $NARA vault on Base.\n\n"${sticker.quote}"\n\n${unlockedCount}/12 dredged — see what you pull 👇`;
+    return `Pulled ${sticker.deco} ${sticker.name} (${sticker.rarity} · #${String(serial).padStart(4, "0")}) in the $NARA #BanksFail arcade.\n\n"${sticker.quote}"\n\n${unlockedCount}/12 collected — beat my clicks 👇`;
   }
 
   // Default: 'flex'
   if (count > 0) {
-    return `${roll.hook}\n\nLogged ${count} ${count === 1 ? 'purge' : 'purges'} in the $NARA terminal on Base (${tier.rank} · @NARA_protocol).\n\n${roll.cta}`;
+    return `${roll.hook}\n\n${count} ${count === 1 ? 'flush' : 'flushes'} in the $NARA #BanksFail arcade (${unlockedCount}/12 stickers) · @NARA_protocol\n\n${roll.cta}`;
   }
-  return `${roll.hook}\n\nStepping into the $NARA porcelain terminal on Base (@NARA_protocol).\n\n${roll.cta}`;
+  return `${roll.hook}\n\nWave 1 $NARA Vault Receipts + #BanksFail arcade live on Base (@NARA_protocol).\n\n${roll.cta}`;
 }
 
 function setTweetMode(mode) {
@@ -1088,11 +1068,11 @@ function updateForgeUI() {
   if (reachModeBtn) {
     reachModeBtn.setAttribute("aria-pressed", xNoLinkMaxReach ? "true" : "false");
     reachModeBtn.className = xNoLinkMaxReach
-      ? "px-2.5 py-1 min-h-[26px] rounded-md bg-amber-500/15 border border-amber-400/50 text-amber-300 text-[10px] font-semibold cursor-pointer"
-      : "px-2.5 py-1 min-h-[26px] rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-400/35 text-emerald-300 text-[10px] font-semibold cursor-pointer";
+      ? "px-2.5 py-1.5 min-h-[32px] rounded-lg bg-amber-500/15 border border-amber-400/50 text-amber-300 text-[11px] font-semibold cursor-pointer"
+      : "px-2.5 py-1.5 min-h-[32px] rounded-lg bg-white/[0.04] hover:bg-white/[0.09] border border-white/10 text-slate-300 hover:text-white text-[11px] cursor-pointer";
   }
   if (reachModeLabel) {
-    reachModeLabel.innerText = xNoLinkMaxReach ? "X MODE: MAX REACH · NO LINK" : "X MODE: OG CARD LINK";
+    reachModeLabel.innerText = xNoLinkMaxReach ? "Link: Off (Max Reach)" : "Link: On";
   }
   if (charCountLabel) {
     charCountLabel.innerText = `${xWeightedLen} / 280 CHARS`;
@@ -1192,8 +1172,8 @@ function copyForgeReplyText() {
   }
   const btnLabel = document.getElementById("copyReplyBtnLabel");
   if (btnLabel) {
-    btnLabel.innerText = "✓ REPLY + CA COPIED!";
-    setTimeout(() => { btnLabel.innerText = "COPY SELF-REPLY + CA"; }, 2200);
+    btnLabel.innerText = "Copied CA + Link";
+    setTimeout(() => { btnLabel.innerText = "Copy CA + Link"; }, 2200);
   }
   injectSewerEvent("[X REACH] Copied link + Base contract address for your self-reply.");
 }
@@ -1256,8 +1236,8 @@ function copyForgeTweetText() {
   const toast = document.getElementById("copyToast");
   const btnLabel = document.getElementById("forgeCopyBtnLabel");
   if (btnLabel) {
-    btnLabel.innerText = "COPIED!";
-    setTimeout(() => { btnLabel.innerText = "COPY TWEET"; }, 2000);
+    btnLabel.innerText = "Copied";
+    setTimeout(() => { btnLabel.innerText = "Copy"; }, 2000);
   }
   if (toast) {
     toast.classList.remove("hidden");
@@ -1315,20 +1295,27 @@ const IDLE_TIPS = [
   "Tip: look closely at the candlestick toilet paper roll — the hidden cipher is BANKS FAIL (#BanksFail).",
   "Tip: stickers and scores save in this browser only. Clearing site data resets them.",
   "Tip: the Fame Board is self-reported. Fewest clicks to 12/12 wins.",
-  "Tip: click BUY $NARA at the top to swap ETH or USDC on the Base Uniswap v4 Hook, or open CryptoSLIP to commit 1+ NARA.",
+  "Tip: click Explore Vault Receipts for fixed-ETH sealed positions with live chest USD, or Swap $NARA via the Base Uniswap v4 Hook.",
   "Tip: COPY puts the full token address on your clipboard. Check it before any swap.",
   "Tip: ADD $NARA TO METAMASK asks your wallet to switch to Base, then to show the token.",
 ];
 let idleTipIndex = 0;
 let lastLogAt = Date.now();
 
+let arcadeBannerTimer = null;
 function injectSewerEvent(text) {
   const ticker = document.getElementById("sewerTickerText");
+  const banner = document.getElementById("arcadeStatusBanner");
   lastLogAt = Date.now();
   if (ticker) {
     ticker.innerText = text;
-    ticker.classList.add("text-naraGreen");
-    setTimeout(() => ticker.classList.remove("text-naraGreen"), 800);
+  }
+  if (banner) {
+    banner.textContent = text.replace(/^\[[A-Z0-9 _-]+\]\s*/, "");
+    clearTimeout(arcadeBannerTimer);
+    arcadeBannerTimer = setTimeout(() => {
+      if (banner) banner.textContent = "";
+    }, 6500);
   }
 }
 
@@ -1401,8 +1388,8 @@ function saveUserStash() {
 }
 
 function formatStickerTweet(sticker, serial, _opRank, flushNum) {
-  const bears = flushNum > 0 ? flushNum : 1;
-  return `Pulled ${sticker.deco} ${sticker.name} (${sticker.rarity} · #${String(serial).padStart(4, "0")}) in ${bears} ${bears === 1 ? 'click' : 'clicks'} on $NARA (@NARA_protocol).\n\n"${sticker.quote}"\n\nSee what you dredge on Base 👇`;
+  const clicks = flushNum > 0 ? flushNum : 1;
+  return `Pulled ${sticker.deco} ${sticker.name} (${sticker.rarity} · #${String(serial).padStart(4, "0")}) in ${clicks} ${clicks === 1 ? 'click' : 'clicks'} in the $NARA #BanksFail arcade (@NARA_protocol).\n\n"${sticker.quote}"\n\nTry your run 👇`;
 }
 
 function renderStickerCardCanvas(sticker, serial, opRank, flushNum) {
@@ -1621,6 +1608,9 @@ function showLootModal(sticker, serial, isNew, flushNum, isExplicitInspect = fal
   renderStickerCardCanvas(sticker, serial, tier.rank.toUpperCase(), flushNum || flushCount);
 
   if (modal) {
+    if (isExplicitInspect && document.activeElement instanceof HTMLElement) {
+      lootPrevFocus = document.activeElement;
+    }
     modal.classList.remove("hidden");
     syncBodyScrollLock();
     const modalBox = document.getElementById("lootModalBox");
@@ -1669,6 +1659,10 @@ function closeLootModal(e) {
     modal._autoDismiss = null;
     modal.classList.add("hidden");
     syncBodyScrollLock();
+    if (lootPrevFocus && lootPrevFocus.isConnected && typeof lootPrevFocus.focus === "function") {
+      lootPrevFocus.focus();
+    }
+    lootPrevFocus = null;
   }
 }
 
@@ -1798,8 +1792,8 @@ async function copyStickerCardFromForge() {
   const imageCopied = await writeCanvasPngToClipboard(cardCanvas);
 
   if (btnLabel) {
-    btnLabel.innerText = imageCopied ? "COPIED! PRESS CTRL+V" : "COPY FAILED (DOWNLOAD BELOW)";
-    setTimeout(() => { btnLabel.innerText = "COPY CARD IMAGE"; }, 2500);
+    btnLabel.innerText = imageCopied ? "Copied! Press Ctrl+V" : "Download in Locker";
+    setTimeout(() => { btnLabel.innerText = "Copy Card"; }, 2500);
   }
 
   const toast = document.getElementById("copyToast");
@@ -1821,7 +1815,7 @@ function buildStashShareData() {
   const tier = getOperatorTier(flushCount);
   const base = CANONICAL_URL.replace(/\/$/, "");
   const shareUrl = count > 0 ? `${base}/s/${userStash.activeStickerId || 1}` : `${base}/s/win`;
-  const text = `${count}/12 $NARA sewer cards dredged on Base (${tier.rank} · ${flushCount} ${flushCount === 1 ? 'click' : 'clicks'}).\n\nPressure gauge is primed — chasing the full 12/12 Fame Board run on @NARA_protocol 👇`;
+  const text = `${count}/12 #BanksFail stickers collected in ${flushCount} ${flushCount === 1 ? 'click' : 'clicks'} in the $NARA arcade (@NARA_protocol).\n\nChasing the full 12/12 leaderboard run — try to beat it 👇`;
   return { text, shareUrl };
 }
 
@@ -2310,6 +2304,7 @@ function sanitizeBoardEntry(item) {
     walletHint: typeof item.walletHint === "string" ? item.walletHint.slice(0, 16) : "",
     postUrl: safePostHref(item.postUrl),
     awardReady: item.awardReady === true,
+    offlineOnly: item.offlineOnly === true,
   };
 }
 
@@ -2384,39 +2379,77 @@ function renderFameBoard(entries) {
     }
 
     const platLabel = (entry.platform || "x").toUpperCase();
-    const walletPill = entry.walletHint
-      ? `<span class="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono border border-emerald-400/30 bg-emerald-500/10 text-emerald-300">${escapeHTML(entry.walletHint)}</span>`
-      : "";
-    const passPill = entry.awardReady
-      ? `<span class="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-amber-400/40 bg-amber-500/10 text-amber-300">Pass ✓</span>`
-      : "";
-    const postLink = entry.postUrl
-      ? `<a href="${escapeHTML(entry.postUrl)}" target="_blank" rel="noopener noreferrer" class="ml-1.5 text-[11px] text-sky-300 hover:underline no-underline">Post ↗</a>`
-      : "";
-
     const tr = document.createElement("tr");
     tr.className = rank === 1 ? "bg-amber-500/[0.04] hover:bg-amber-500/[0.08] transition-colors" : "hover:bg-white/[0.02] transition-colors";
-    tr.innerHTML = `
-      <td class="py-3 px-3 sm:px-4 text-center text-xs ${rankClass}">${rankBadge}</td>
-      <td class="py-3 px-3 sm:px-4 font-mono font-semibold text-xs text-white">
-        <span class="inline-flex flex-wrap items-center gap-1">
-          <span class="px-1.5 py-0.5 rounded text-[10px] border border-white/15 bg-white/[0.05] text-slate-300">${platLabel}</span>
-          <span>${escapeHTML(entry.handle)}</span>
-          ${walletPill}${passPill}${postLink}
-        </span>
-      </td>
-      <td class="py-3 px-3 sm:px-4 text-center font-mono font-bold text-xs text-amber-300">
-        ${score} <span class="text-[10px] text-slate-400 font-normal">clicks</span>
-      </td>
-      <td class="py-3 px-3 sm:px-4 hidden sm:table-cell">
-        <span class="px-2 py-0.5 rounded text-[10px] font-semibold border" style="color:${tier.color}; border-color:${tier.border}66; background:${tier.bg};">
-          ${tier.name}
-        </span>
-      </td>
-      <td class="py-3 px-3 sm:px-4 text-right hidden md:table-cell text-slate-400 font-mono text-xs">
-        ${escapeHTML(entry.date || "Recent")}
-      </td>
-    `;
+
+    const tdRank = document.createElement("td");
+    tdRank.className = `py-3 px-3 sm:px-4 text-center text-xs ${rankClass}`;
+    tdRank.textContent = rankBadge;
+    tr.appendChild(tdRank);
+
+    const tdHandle = document.createElement("td");
+    tdHandle.className = "py-3 px-3 sm:px-4 font-mono font-semibold text-xs text-white";
+    const handleWrap = document.createElement("span");
+    handleWrap.className = "inline-flex flex-wrap items-center gap-1";
+
+    const platSpan = document.createElement("span");
+    platSpan.className = "px-1.5 py-0.5 rounded text-[10px] border border-white/15 bg-white/[0.05] text-slate-300";
+    platSpan.textContent = platLabel;
+    handleWrap.appendChild(platSpan);
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = entry.handle;
+    handleWrap.appendChild(nameSpan);
+
+    if (entry.walletHint) {
+      const wp = document.createElement("span");
+      wp.className = "ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono border border-emerald-400/30 bg-emerald-500/10 text-emerald-300";
+      wp.textContent = entry.walletHint;
+      handleWrap.appendChild(wp);
+    }
+    if (entry.awardReady) {
+      const pp = document.createElement("span");
+      pp.className = "ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-amber-400/40 bg-amber-500/10 text-amber-300";
+      pp.textContent = "Pass ✓";
+      handleWrap.appendChild(pp);
+    }
+    if (entry.postUrl) {
+      const pa = document.createElement("a");
+      pa.href = entry.postUrl;
+      pa.target = "_blank";
+      pa.rel = "noopener noreferrer";
+      pa.className = "ml-1.5 text-[11px] text-sky-300 hover:underline no-underline";
+      pa.textContent = "Post ↗";
+      handleWrap.appendChild(pa);
+    }
+    tdHandle.appendChild(handleWrap);
+    tr.appendChild(tdHandle);
+
+    const tdScore = document.createElement("td");
+    tdScore.className = "py-3 px-3 sm:px-4 text-center font-mono font-bold text-xs text-amber-300";
+    tdScore.appendChild(document.createTextNode(`${score} `));
+    const clickSpan = document.createElement("span");
+    clickSpan.className = "text-[10px] text-slate-400 font-normal";
+    clickSpan.textContent = "clicks";
+    tdScore.appendChild(clickSpan);
+    tr.appendChild(tdScore);
+
+    const tdTier = document.createElement("td");
+    tdTier.className = "py-3 px-3 sm:px-4 hidden sm:table-cell";
+    const tierPill = document.createElement("span");
+    tierPill.className = "px-2 py-0.5 rounded text-[10px] font-semibold border";
+    tierPill.style.color = tier.color;
+    tierPill.style.borderColor = `${tier.border}66`;
+    tierPill.style.background = tier.bg;
+    tierPill.textContent = tier.name;
+    tdTier.appendChild(tierPill);
+    tr.appendChild(tdTier);
+
+    const tdDate = document.createElement("td");
+    tdDate.className = "py-3 px-3 sm:px-4 text-right hidden md:table-cell text-slate-400 font-mono text-xs";
+    tdDate.textContent = entry.date || "Recent";
+    tr.appendChild(tdDate);
+
     tbody.appendChild(tr);
   });
 }
@@ -2428,10 +2461,15 @@ async function syncFameBoardFromAPI() {
       const remoteData = await res.json();
       if (Array.isArray(remoteData)) {
         const cleanRemote = remoteData.map(sanitizeBoardEntry).filter(item => item && !isLegacyMockSeed(item.handle));
-        // Merge with any offline submissions in localFameBoard
+        // Authoritative server state: never resurrect GDPR-erased server rows from stale browser cache.
+        // Preserve only rows explicitly flagged offlineOnly (submitted when API was unavailable).
         const merged = [...cleanRemote];
         localFameBoard.forEach(localItem => {
-          if (!isLegacyMockSeed(localItem.handle) && !merged.some(m => m.handle.toLowerCase() === localItem.handle.toLowerCase() && m.score === localItem.score)) {
+          if (
+            localItem?.offlineOnly &&
+            !isLegacyMockSeed(localItem.handle) &&
+            !merged.some(m => m.handle.toLowerCase() === localItem.handle.toLowerCase())
+          ) {
             merged.push(localItem);
           }
         });
@@ -2497,7 +2535,7 @@ function ensureTurnstile() {
   s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?onload=naraTurnstileReady&render=explicit";
   s.async = true;
   s.defer = true;
-  s.onerror = () => { turnstileFailed = true; };
+  s.onerror = () => { turnstileFailed = true; s.remove(); };
   document.head.appendChild(s);
 }
 
@@ -2522,7 +2560,7 @@ function setSubmitState(state) {
   if (btnText) btnText.innerText = copy.btn;
   if (notice) {
     notice.innerText = copy.note;
-    notice.className = `text-[8px] font-mono mt-1 ${copy.cls}${copy.note ? "" : " hidden"}`;
+    notice.className = `text-xs font-mono mt-1 ${copy.cls}${copy.note ? "" : " hidden"}`;
   }
 }
 
@@ -2580,8 +2618,8 @@ async function fillVictoryConnectedWallet() {
   }
   const notice = document.getElementById("victorySubmitNotice");
   if (notice) {
-    notice.innerText = "Connect a wallet in BUY $NARA first, or paste any Base 0x address manually.";
-    notice.className = "text-[8px] font-mono mt-1 text-amber-300";
+    notice.innerText = "Connect a wallet in Swap $NARA first, or paste any Base 0x address manually.";
+    notice.className = "text-xs font-mono mt-1 text-amber-300";
   }
 }
 
@@ -2688,6 +2726,9 @@ function triggerVictoryFlow() {
 
   const modal = document.getElementById("victoryModal");
   if (modal) {
+    if (document.activeElement instanceof HTMLElement) {
+      victoryPrevFocus = document.activeElement;
+    }
     modal.classList.remove("hidden");
     syncBodyScrollLock();
   }
@@ -2712,6 +2753,10 @@ function closeVictoryModal(e) {
   if (modal) {
     modal.classList.add("hidden");
     syncBodyScrollLock();
+    if (victoryPrevFocus && victoryPrevFocus.isConnected && typeof victoryPrevFocus.focus === "function") {
+      victoryPrevFocus.focus();
+    }
+    victoryPrevFocus = null;
   }
 }
 
@@ -2740,12 +2785,13 @@ async function submitVictoryToFameBoard() {
     if (cleanPostUrl) localStorage.setItem("nara_operator_post_v1", cleanPostUrl);
   } catch (e) {}
 
-  // 1. Always save locally first (device record)
+  // 1. Always save locally first (device record; flagged offlineOnly until server confirms)
   const rating = getRatingTier(runFlushes);
   const newEntry = {
     handle: cleanHandle,
     score: runFlushes,
     tier: rating.name,
+    offlineOnly: true,
     date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
     timestamp: Date.now(),
     platform: victoryPlatform,
@@ -2874,7 +2920,7 @@ async function submitVictoryToFameBoard() {
 
 function buildVictoryShareData() {
   const rating = getRatingTier(runFlushes);
-  const text = `Cleared all 12/12 $NARA vault cards in ${runFlushes} clicks on Base 🏆\n\nRank: ${rating.name} (@NARA_protocol)\n\nThink you can clear the Fame Board in fewer clicks? 👇`;
+  const text = `Cleared all 12/12 #BanksFail arcade stickers in ${runFlushes} clicks on $NARA 🏆\n\nRank: ${rating.name} (@NARA_protocol)\n\nThink you can clear the board in fewer clicks? 👇`;
   const shareUrl = getShareUrl("win");
   return { text, shareUrl };
 }
@@ -2919,7 +2965,7 @@ function clearResetArming() {
   resetConfirmTimer = null;
   const btn = document.getElementById("resetRunBtn");
   if (btn) {
-    btn.innerText = "RESET RUN";
+    btn.innerText = "Reset";
     btn.classList.remove("bg-hazardRed", "text-white", "border-white");
   }
 }
@@ -3234,12 +3280,14 @@ function copyCA() {
   }
   const btnText = document.getElementById("copyBtnText");
   if (btnText) {
-    btnText.innerText = "COPIED";
-    btnText.classList.add("text-naraGreen");
-    setTimeout(() => {
-      btnText.innerText = "COPY";
-      btnText.classList.remove("text-naraGreen");
-    }, 2500);
+    btnText.innerText = "Copied";
+    btnText.classList.add("text-emerald-300");
+    if (copyCaTimer) clearTimeout(copyCaTimer);
+    copyCaTimer = setTimeout(() => {
+      btnText.innerText = "Copy CA";
+      btnText.classList.remove("text-emerald-300");
+      copyCaTimer = null;
+    }, 2400);
   }
 }
 
@@ -3304,17 +3352,19 @@ async function addNaraToMetaMask() {
       });
       if (wasAdded) {
         if (label) {
-          label.innerText = "TOKEN ADDED";
-          label.classList.add("text-naraGreen");
-          setTimeout(() => {
-            label.innerText = "ADD $NARA TO METAMASK";
-            label.classList.remove("text-naraGreen");
+          label.innerText = "Token Added";
+          label.classList.add("text-emerald-300");
+          if (mmLabelTimer) clearTimeout(mmLabelTimer);
+          mmLabelTimer = setTimeout(() => {
+            label.innerText = "Add $NARA to MetaMask";
+            label.classList.remove("text-emerald-300");
+            mmLabelTimer = null;
           }, 3000);
         }
         if (receiptBtn) {
-          receiptBtn.textContent = "✓ $NARA IN WALLET";
+          receiptBtn.textContent = "✓ $NARA in Wallet";
           setTimeout(() => {
-            receiptBtn.textContent = "+ SHOW $NARA IN WALLET";
+            receiptBtn.textContent = "+ Show $NARA in Wallet";
           }, 3000);
         }
       }
@@ -3323,14 +3373,16 @@ async function addNaraToMetaMask() {
       copyCA();
       if (label) {
         label.innerText = "CA COPIED TO CLIPBOARD";
-        setTimeout(() => {
-          label.innerText = "ADD $NARA TO METAMASK";
+        if (mmLabelTimer) clearTimeout(mmLabelTimer);
+        mmLabelTimer = setTimeout(() => {
+          label.innerText = "Add $NARA to MetaMask";
+          mmLabelTimer = null;
         }, 3000);
       }
       if (receiptBtn) {
-        receiptBtn.textContent = "CA COPIED ✓";
+        receiptBtn.textContent = "CA Copied ✓";
         setTimeout(() => {
-          receiptBtn.textContent = "+ SHOW $NARA IN WALLET";
+          receiptBtn.textContent = "+ Show $NARA in Wallet";
         }, 3000);
       }
     } finally {
@@ -3340,14 +3392,16 @@ async function addNaraToMetaMask() {
     copyCA();
     if (label) {
       label.innerText = "CA COPIED TO CLIPBOARD";
-      setTimeout(() => {
-        label.innerText = "ADD $NARA TO METAMASK";
+      if (mmLabelTimer) clearTimeout(mmLabelTimer);
+      mmLabelTimer = setTimeout(() => {
+        label.innerText = "Add $NARA to MetaMask";
+        mmLabelTimer = null;
       }, 3000);
     }
     if (receiptBtn) {
-      receiptBtn.textContent = "CA COPIED ✓";
+      receiptBtn.textContent = "CA Copied ✓";
       setTimeout(() => {
-        receiptBtn.textContent = "+ SHOW $NARA IN WALLET";
+        receiptBtn.textContent = "+ Show $NARA in Wallet";
       }, 3000);
     }
   }
@@ -3357,19 +3411,15 @@ async function addNaraToMetaMask() {
 document.addEventListener("keydown", (e) => {
   // Never hijack browser shortcuts (Ctrl+F, Cmd+F, Alt+F, etc.)
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const tag = e.target?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
 
+  // Escape MUST dismiss active modals even when focus is inside an <input> or <textarea>
   if (e.key === "Escape") {
     const vicModal = document.getElementById("victoryModal");
-    const swapModal = document.getElementById("swapPrelaunchModal");
     const lootModal = document.getElementById("lootModal");
     if (isBuyModalOpen()) {
       closeBuyModal();
     } else if (vicModal && !vicModal.classList.contains("hidden")) {
       closeVictoryModal();
-    } else if (swapModal && !swapModal.classList.contains("hidden")) {
-      closeSwapModal();
     } else if (lootModal && !lootModal.classList.contains("hidden")) {
       closeLootModal();
     } else {
@@ -3378,6 +3428,9 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
+  const tag = e.target?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
+
   if (e.key === " " || e.key === "f" || e.key === "F") {
     if (e.repeat) return;
     // Allow Space to activate focused buttons/links naturally
@@ -3385,13 +3438,11 @@ document.addEventListener("keydown", (e) => {
       return;
     }
     const vicModal = document.getElementById("victoryModal");
-    const swapModal = document.getElementById("swapPrelaunchModal");
     const lootModal = document.getElementById("lootModal");
     // Do not flush behind blocking modals (or explicit card inspect modal)
     if (
       isBuyModalOpen() ||
       (vicModal && !vicModal.classList.contains("hidden")) ||
-      (swapModal && !swapModal.classList.contains("hidden")) ||
       (lootModal && !lootModal.classList.contains("hidden") && !lootModal._autoDismiss)
     ) {
       return;
